@@ -1035,6 +1035,32 @@ int BlueFS::_verify_alloc_granularity(
   return 0;
 }
 
+///////////////////////////////////////////////////////////////////////////////
+/// BEGIN
+///////////////////////////////////////////////////////////////////////////////
+
+
+/// @brief 执行 BlueFS 日志回放操作，支持调试模式与静默模式
+///        根据参数控制回放行为，用于元数据恢复或日志分析
+/// 
+/// @param noop [IN] 操作模式标志（实际为布尔值）
+///        - 1: 只读模式（noop模式），仅解析日志不修改内存状态
+///        - 0: 正常模式，执行完整元数据恢复
+/// @param to_stdout [IN] 日志输出模式（实际为布尔值）
+///        - 1: 输出详细日志到标准输出（含每条事务/操作记录）
+///        - 0: 正常日志系统输出（通过dout()/derr()记录）
+/// @return int 返回操作结果
+///        - 0: 成功完成回放
+///        - 负数: 错误码（参考BlueStore错误码体系）
+///
+/// @note 该函数是 BlueFS 挂载流程的核心环节，通过日志回放重建内存元数据结构
+/// @note 当设置 noop=1 时，会临时禁用 superblock 中的 fnode 使用，确保验证过程不破坏现有状态
+/// @note to_stdout=1 时，会输出类似以下调试信息
+///
+///        @code
+///        0x12345678: op_dir_create /mydir
+///        0x87654321: op_file_write 4096@0xabcdef
+///        @endcode
 int BlueFS::_replay(bool noop, bool to_stdout)
 {
   dout(10) << __func__ << (noop ? " NO-OP" : "") << dendl;
@@ -1057,7 +1083,7 @@ int BlueFS::_replay(bool noop, bool to_stdout)
   dout(10) << __func__ << " log_fnode " << super.log_fnode << dendl;
   if (unlikely(to_stdout)) {
     std::cout << " log_fnode " << super.log_fnode << std::endl;
-  } 
+  }
 
   FileReader *log_reader = new FileReader(
     log_file, cct->_conf->bluefs_max_prefetch,
@@ -1083,12 +1109,24 @@ int BlueFS::_replay(bool noop, bool to_stdout)
       }
     }
   }
-  
-  while (true) {
+
+  // 这里打印file_map
+  derr << "[1] 开始打印file_map" << dendl;
+  for (auto &p: file_map) {
+      // print p.second->refs
+      // print p.second->fnode.ino
+      derr << __func__ << " JIYOU file_map: " << p.second->refs
+           << " " << p.second->fnode.ino << dendl;
+  }
+  derr << "[1] 打印file_map结束" << dendl;
+
+  bool replay_log = true;
+  while (replay_log) {
     ceph_assert((log_reader->buf.pos & ~super.block_mask()) == 0);
     uint64_t pos = log_reader->buf.pos;
     uint64_t read_pos = pos;
     bufferlist bl;
+
     {
       int r = _read(log_reader, read_pos, super.block_size,
 		    &bl, NULL);
@@ -1098,6 +1136,7 @@ int BlueFS::_replay(bool noop, bool to_stdout)
       assert(r == (int)super.block_size);
       read_pos += r;
     }
+
     uint64_t more = 0;
     uint64_t seq;
     uuid_d uuid;
@@ -1544,6 +1583,16 @@ int BlueFS::_replay(bool noop, bool to_stdout)
 
   delete log_reader;
 
+    // 这里打印file_map
+    derr << "[2] 开始打印file_map" << dendl;
+    for (auto &p: file_map) {
+            // print p.second->refs
+            // print p.second->fnode.ino
+            derr << __func__ << " JIYOU file_map: " << p.second->refs
+                 << " " << p.second->fnode.ino << dendl;
+    }
+    derr << "[2] 打印file_map结束" << dendl;
+
   if (!noop) {
     // verify file link counts are all >0
     for (auto& p : file_map) {
@@ -1556,9 +1605,15 @@ int BlueFS::_replay(bool noop, bool to_stdout)
     }
   }
 
+
   dout(10) << __func__ << " done" << dendl;
   return 0;
 }
+
+///////////////////////////////////////////////////////////////////////////////
+/// END
+///////////////////////////////////////////////////////////////////////////////
+
 
 int BlueFS::log_dump()
 {
