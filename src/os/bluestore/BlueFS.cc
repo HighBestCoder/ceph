@@ -921,6 +921,8 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
         }
     }
 
+    derr << "[0] 打印参数" << dendl;
+    derr << "bluefs_replay_recovery: " << cct->_conf->bluefs_replay_recovery << dendl;
     // 这里打印file_map
     derr << "[1] 开始打印file_map" << dendl;
     for (auto& p : file_map) {
@@ -929,6 +931,8 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
         derr << __func__ << " JIYOU file_map: " << p.second->refs << " " << p.second->fnode.ino << dendl;
     }
     derr << "[1] 打印file_map结束" << dendl;
+
+    int read_counter = 0;
 
     bool replay_log = true;
     while (replay_log) {
@@ -949,24 +953,17 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
             /// 件系统存储结构对齐。
             int r = _read(log_reader, read_pos, super.block_size, &bl, NULL);
 
-            /// 这段代码是 BlueFS
-            /// 日志回放过程中按块读取日志数据的核心逻辑，具体作用如下：
+            read_counter++;
 
-            /// 1. ​代码功能解析​
-            /// int r = _read(log_reader, read_pos, super.block_size, &bl, NULL);
-            /// ​读取目标​：从日志文件（log_file）的当前位置（read_pos）读取一个
-            /// ​完整块（super.block_size）​​ 的数据到缓冲区 bl
-            /// 中。
-            /// ​块大小依据​：使用 super.block_size（来自 BlueFS
-            /// superblock
-            /// 的块大小参数）作为每次读取的单位，确保与文件系统存储结构对齐。
-            /// 2. ​关键逻辑说明​
-            /// (1) ​为什么读取块而非直接读取事务？​​
-            /// ​日志存储结构​：BlueFS
-            /// 日志中的事务可能跨多个块存储​（例如大事务或碎片化写入），需按块读取后逐步解析。
-            /// ​性能优化​：块读取符合存储介质的物理特性（如
-            /// SSD 的页缓存机制），减少随机 I/O 开销。 (2)
-            /// ​恢复模式处理
+            derr << "[JIYOU] 读取日志文件的第 " << read_counter << " 次，读取的字节数为: " << r << dendl;
+
+            /// ❗触发 r != super.block_size 的几种可能场景
+            ///  ✅ 1. 日志被意外截断（常见）
+            ///  这通常出现在系统宕机、中断、磁盘写失败等场景：
+            ///
+            ///  Ceph 在写 BlueFS 日志时，可能还没写完整个 block（比如写了一半就宕机了）；
+            ///
+            ///  下次 replay 时就会发现，这一块只有一半的数据。
             if (r != (int)super.block_size && cct->_conf->bluefs_replay_recovery) {
                 r += do_replay_recovery_read(log_reader, pos, read_pos + r, super.block_size - r, &bl);
             }
@@ -3142,16 +3139,85 @@ bool BlueFS::wal_is_rotational() {
     return bdev[BDEV_SLOW]->is_rotational();
 }
 
-/*
-  Algorithm.
-  do_replay_recovery_read is used when bluefs log abruptly ends, but it seems
-  that more data should be there. Idea is to search disk for definiton of
-  extents that will be accompanied with bluefs log in future, and try if using
-  it will produce healthy bluefs transaction. We encode already known bluefs log
-  extents and search disk for these bytes. When we find it, we decode following
-  bytes as extent. We read that whole extent and then check if merged with
-  existing log part gives a proper bluefs transaction.
- */
+/// @brief 执行 BlueFS 日志恢复的扩展读取操作
+///        当日志读取不完整（如 block 未读满）时，尝试从磁盘中继续读取剩余部分，
+///        以尽可能恢复完整事务内容，避免因日志截断导致 replay 失败。
+///
+/// @param log_reader [IN] 日志文件读取器对象
+/// @param replay_pos [IN] 当前回放事务的逻辑位置（即事务的起始位置）
+///                       用于标识此次恢复对应的事务地址，通常仅用于调试、日志输出等
+/// @param read_offset [IN] 实际用于继续读取的文件偏移位置，等于 replay_pos 加上已读长度
+///                         此参数指示从何处继续读取剩余数据
+/// @param read_len [IN] 期望读取的数据长度（通常是 block_size 减去已读部分）
+/// @param bl [OUT] 输出缓冲区，存储成功恢复的数据
+///
+/// @return int 成功读取的字节数，0 表示未能恢复任何数据
+///
+/// @note 该函数仅在 BlueFS 配置启用了 `bluefs_replay_recovery` 选项时生效
+/// @note replay_pos 不参与实际读取逻辑，仅用于日志或异常标识
+/// @note read_offset 是实际继续读取的起点，是数据补全的关键
+/// @note 该函数用于提高 BlueFS 在日志意外截断情况下的容错能力
+/// @note 设计用于辅助 `_replay()` 函数在读取日志 block 不完整时尝试恢复剩余部分
+///
+/// @example
+/// // 如果当前事务在位置 10000，已读取 3000 字节，
+/// // block_size 为 4096，则调用方式如下：
+/// do_replay_recovery_read(log_reader, 10000, 13000, 1096, &bl);
+/// ## 函数原型回顾：
+///
+/// ```cpp
+/// int BlueFS::do_replay_recovery_read(
+///     FileReader* log_reader,
+///     size_t replay_pos,      // 日志逻辑位置
+///     size_t read_offset,     // 实际物理偏移（或下一次读取的起点）
+///     size_t read_len,
+///     bufferlist* bl);
+/// ```
+///
+/// ---
+///
+/// ## 参数含义详细解释：
+///
+/// ### ✅ `replay_pos`
+/// - 这是 **当前回放的事务位置**，通常对应着当前处理的日志记录（transaction）的起始位置。
+/// - 这个值是 `_replay()` 主循环里的变量 `pos`，它跟踪的是**逻辑上当前正在 replay 的事务的地址**。
+/// - 在恢复模式下，这个值用于日志输出、调试和标识出错事务的位置（比如记录“哪个事务出错了”）。
+/// - **它不会在函数内部用于读取数据**，只是做记录或打印。
+///
+/// ### ✅ `read_offset`
+/// - 这是 **真正要继续读取数据的偏移量**，用于从 log 文件里**补充未读满的数据**。
+/// - 假设原本打算读一个完整的 block（比如 4KB），但只读到了 3KB（可能由于文件截断或写入中断），我们就会进入恢复流程，试图从 `read_offset` 开始**继续读剩下的 1KB**。
+/// - `read_offset = replay_pos + 已经读到的数据长度`。
+///
+/// ---
+///
+/// ## 举个例子说明：
+///
+/// 假设：
+/// - 当前事务在日志中的位置是 `pos = 10000`，也就是 `replay_pos = 10000`。
+/// - `block_size = 4096`，目标是读取一个完整 block。
+/// - 初次读取只读到了 `r = 3000` 字节。
+///
+/// 这时候触发恢复逻辑：
+///
+/// ```cpp
+/// r += do_replay_recovery_read(
+///     log_reader,
+///     10000,                 // replay_pos: 当前事务逻辑位置
+///     10000 + 3000,          // read_offset: 继续读的位置
+///     1096,                  // 剩余要读的长度
+///     &bl);
+/// ```
+///
+/// ---
+///
+/// ## 小结：
+///
+/// | 参数        | 作用                             | 是否参与实际读取 | 举例值     |
+/// |-------------|----------------------------------|------------------|------------|
+/// | `replay_pos`| 当前事务的逻辑位置（用于标识事务）| 否               | 10000      |
+/// | `read_offset`| 读取操作的实际物理偏移（继续读的起点）| ✅ 是            | 13000      |
+///
 int BlueFS::do_replay_recovery_read(FileReader* log_reader, size_t replay_pos, size_t read_offset, size_t read_len, bufferlist* bl) {
     dout(1) << __func__ << " replay_pos=0x" << std::hex << replay_pos << " needs 0x" << read_offset << "~" << read_len << std::dec << dendl;
 

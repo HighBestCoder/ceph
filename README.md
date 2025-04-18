@@ -55,6 +55,7 @@ Build instructions:
 
 	./do_cmake.sh
 	cd build
+    unset PIP_INDEX_URL
 	make
 
 (Note: do_cmake.sh now defaults to creating a debug build of ceph that can
@@ -133,6 +134,7 @@ To run a functional test cluster,
 
 	cd build
 	make vstart        # builds just enough to run vstart
+    MON=1 MDS=0 OSD=0 VSTART_DEST="/ceph/ceph/build/out" ../src/vstart.sh -d -n -x
 	../src/vstart.sh --debug --new -x --localhost --bluestore
 	./bin/ceph -s
 
