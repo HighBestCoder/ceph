@@ -4055,7 +4055,7 @@ void pg_log_entry_t::decode_with_checksum(ceph::buffer::list::const_iterator &p)
     __u32 crc;
     decode(crc, p);
     if (crc != bl.crc32c(0)) {
-        out << __func__ << " bad checksum on pg_log_entry_t, 遇到坏的pg_log_entry_t直接返回" << dendl;
+        std::cerr << "bad checksum on pg_log_entry_t, bl.crc32c(0) 这里直接返回" << std::endl;
         // throw ceph::buffer::malformed_input("bad checksum on pg_log_entry_t");
         return;
     }
