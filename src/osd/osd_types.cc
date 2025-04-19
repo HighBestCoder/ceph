@@ -4042,20 +4042,14 @@ void pg_log_entry_t::encode_with_checksum(ceph::buffer::list &bl) const {
     encode(crc, bl);
 }
 
-// 这里尝试去修复OSD.21的pg_log_entry_t的checksum错误
-// 这个函数的作用是从迭代器 p 中读取数据到 bl 中，并计算校验和 crc
-// 如果 crc 和 bl 的 crc32c(0) 不匹配，则输出错误信息并返回
-// 这个函数的实现是为了处理 pg_log_entry_t 的解码过程中的校验和验证
-// 这里的逻辑是，如果校验和不匹配，则直接返回，不抛出异常
 void pg_log_entry_t::decode_with_checksum(ceph::buffer::list::const_iterator &p) {
     using ceph::decode;
     ceph::buffer::list bl;
-    // 从迭代器 p 读取数据到 bl
     decode(bl, p);
     __u32 crc;
     decode(crc, p);
     if (crc != bl.crc32c(0)) {
-        std::cerr << "bad checksum on pg_log_entry_t, bl.crc32c(0) 这里直接返回" << std::endl;
+        std::cerr << "[JIYOU]: bad checksum on pg_log_entry_t" << std::endl;
         // throw ceph::buffer::malformed_input("bad checksum on pg_log_entry_t");
         return;
     }
