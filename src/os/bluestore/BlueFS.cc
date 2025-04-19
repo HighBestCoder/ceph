@@ -876,6 +876,12 @@ int BlueFS::_verify_alloc_granularity(__u8 id, uint64_t offset, uint64_t length,
 ///        0x12345678: op_dir_create /mydir
 ///        0x87654321: op_file_write 4096@0xabcdef
 ///        @endcode
+/// 看起来osd.4是正常退出的
+/// osd BlueFS UUID 异常为 00000... != super.uuid
+/// 然后在
+/// 2025-04-14T16:29:18.245 + 0800 ffff0f8200406 db.slow,
+///             7600869087846.rocksdb : verify sharding unable to list column families : NotFound
+///
 int BlueFS::_replay(bool noop, bool to_stdout) {
     dout(10) << __func__ << (noop ? " NO-OP" : "") << dendl;
     ino_last = 1;  // by the log
@@ -955,8 +961,6 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
 
             read_counter++;
 
-            derr << "[JIYOU] 读取日志文件的第 " << read_counter << " 次，读取的字节数为: " << r << dendl;
-
             /// ❗触发 r != super.block_size 的几种可能场景
             ///  ✅ 1. 日志被意外截断（常见）
             ///  这通常出现在系统宕机、中断、磁盘写失败等场景：
@@ -965,13 +969,30 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
             ///
             ///  下次 replay 时就会发现，这一块只有一半的数据。
             if (r != (int)super.block_size && cct->_conf->bluefs_replay_recovery) {
+                derr << "[JIYOU] 读取日志文件的第 " << read_counter << " 次，读取的字节数为: " << r << "这里需要做do_replay_recovery_read" << dendl;
+                // 2025-04-18T17:26:31.728+0800 fffd1bceb2c0 -14 expected -1 bluefs replay stop: seq 45507211 0x437000
+                // 2025-04-18T17:26:31.728+0800 fffd1bceb2c0 -14 expected -1 bluefs replay stop: seq 45507212 0x438000
+                // 2025-04-18T17:26:31.728+0800 fffd1bceb2c0 -14 expected -1 bluefs replay stop: seq 45507213 0x439000
+                // 2025-04-18T17:26:31.728+0800 fffd1bceb2c0 -14 expected -1 bluefs replay stop: seq 45507214 0x43a000
+                // 2025-04-18T17:26:31.728+0800 fffd1bceb2c0 -14 expected -1 bluefs replay stop: seq 45507215 0x436000
+                // 2025-04-18T17:26:31.728+0800 fffd1bceb2c0 -14 expected -1 bluefs replay stop: seq 45507216 0x43c000
+                // 2025-04-18T17:26:31.728+0800 fffd1bceb2c0 -14 expected -1 bluefs replay stop: seq 45507217 0x43d000
+                // 2025-04-18T17:26:31.728+0800 fffd1bceb2c0 -14 expected -1 bluefs replay stop: seq 45507218 0x43e000
+                // 2025-04-18T17:26:31.728+0800 fffd1bceb2c0 -14 expected -1 bluefs replay stop: seq 45507219 0x43f000
+                // 2025-04-18T17:26:31.738+0800 fffd1bceb2c0 -1 /ceph/ceph/src/os/bluestore/BlueFS,cc: In function 'int BlueFs::do_replay_recovery read(BlueFS::FileReader ceph::bufferlist*)'thread
+                // fffdlbceb2c0 time size size 2025-04-18T17:26:31.737334+0800 /ceph/ceph/src/os/bluestore/BlueFs.cc:3676: FAILED ceph assert(bin extents.length()>= 32)ceph
+                // version 16.2.12(5a2d516ce4b134bfafc80c4274532ac0d56fc1e2)pacific (stable) 2025-04-18T17:26:31.748+0800 fffd1bceb2c0 -1 ***Caught signal(Aborted)in thread fffdlbceb2c0 thread
+                // name:ceph-bluestore
                 r += do_replay_recovery_read(log_reader, pos, read_pos + r, super.block_size - r, &bl);
+            } else {
+                derr << "[JIYOU] 读取日志文件的第 " << read_counter << " 次，读取的字节数为: " << r << dendl;
             }
 
             assert(r == (int)super.block_size);
             read_pos += r;
         }
 
+        /// 读取成功后，尝试去decode这个日志条目
         uint64_t more = 0;
         uint64_t seq;
         uuid_d uuid;
@@ -988,9 +1009,10 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
                 more = round_up_to(len + 6 - bl.length(), super.block_size);
             }
         }
+
         if (uuid != super.uuid) {
             if (seen_recs) {
-                dout(10) << __func__ << " 0x" << std::hex << pos << std::dec << ": stop: uuid " << uuid << " != super.uuid " << super.uuid << dendl;
+                derr << __func__ << " 0x" << std::hex << pos << std::dec << ": stop: uuid " << uuid << " != super.uuid " << super.uuid << dendl;
             } else {
                 derr << __func__ << " 0x" << std::hex << pos << std::dec << ": stop: uuid " << uuid << " != super.uuid " << super.uuid << ", block dump: \n";
                 bufferlist t;
@@ -998,24 +1020,26 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
                 t.hexdump(*_dout);
                 *_dout << dendl;
             }
+            derr << "[JIYOU] 读取日志文件的第 " << read_counter << " 次，然后发现uuid不匹配" << dendl;
+            // 但是这里我们并不
             break;
         }
+
         if (seq != log_seq + 1) {
             if (seen_recs) {
-                dout(10) << __func__ << " 0x" << std::hex << pos << std::dec << ": stop: seq " << seq << " != expected " << log_seq + 1 << dendl;
-                ;
+                derr << __func__ << " 0x" << std::hex << pos << std::dec << ": stop: seq " << seq << " != expected " << log_seq + 1 << dendl;
             } else {
                 derr << __func__ << " 0x" << std::hex << pos << std::dec << ": stop: seq " << seq << " != expected " << log_seq + 1 << dendl;
-                ;
             }
             break;
         }
+
         if (more) {
-            dout(20) << __func__ << " need 0x" << std::hex << more << std::dec << " more bytes" << dendl;
+            derr << __func__ << " need 0x" << std::hex << more << std::dec << " more bytes" << dendl;
             bufferlist t;
             int r = _read(log_reader, read_pos, more, &t, NULL);
             if (r < (int)more) {
-                dout(10) << __func__ << " 0x" << std::hex << pos << ": stop: len is 0x" << bl.length() + more << std::dec << ", which is past eof" << dendl;
+                derr << __func__ << " 0x" << std::hex << pos << ": stop: len is 0x" << bl.length() + more << std::dec << ", which is past eof" << dendl;
                 if (cct->_conf->bluefs_replay_recovery) {
                     // try to search for more data
                     r += do_replay_recovery_read(log_reader, pos, read_pos + r, more - r, &t);
@@ -1039,7 +1063,7 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
             // Multi-block transactions might be incomplete due to unexpected
             // power off. Hence let's treat that as a regular stop condition.
             if (seen_recs && more) {
-                dout(10) << __func__ << " 0x" << std::hex << pos << std::dec << ": stop: failed to decode: " << e.what() << dendl;
+                derr << __func__ << " 0x" << std::hex << pos << std::dec << ": stop: failed to decode: " << e.what() << dendl;
             } else {
                 derr << __func__ << " 0x" << std::hex << pos << std::dec << ": stop: failed to decode: " << e.what() << dendl;
                 delete log_reader;
@@ -1047,6 +1071,7 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
             }
             break;
         }
+
         ceph_assert(seq == t.seq);
         dout(10) << __func__ << " 0x" << std::hex << pos << std::dec << ": " << t << dendl;
         if (unlikely(to_stdout)) {
