@@ -5013,26 +5013,23 @@ int BlueStore::_prepare_db_environment(bool create, bool read_only, std::string*
 
     bool do_bluefs;
     r = _is_bluefs(create, &do_bluefs);
-    if (r < 0) {
-        return r;
-    }
-    dout(10) << __func__ << " do_bluefs = " << do_bluefs << dendl;
+    LOG_CHECK_ERR_RETURN(r);
+
+    LOG(CEPH_INFO, "bluestore_bluefs = %d", do_bluefs);
 
     map<string, string> kv_options;
     // force separate wal dir for all new deployments.
     kv_options["separate_wal_dir"] = 1;
     rocksdb::Env* env = NULL;
     if (do_bluefs) {
-        dout(10) << __func__ << " initializing bluefs" << dendl;
+        LOG(CEPH_INFO, "initializing bluefs");
         if (kv_backend != "rocksdb") {
-            derr << " backend must be rocksdb to use bluefs" << dendl;
+            LOG_ROOT_ERR(-EINVAL, "BlueStore: bluestore_bluefs is enabled but bluestore_kvbackend is not rocksdb");
             return -EINVAL;
         }
 
         r = _open_bluefs(create, read_only);
-        if (r < 0) {
-            return r;
-        }
+        LOG_CHECK_ERR_RETURN(r);
 
         if (cct->_conf->bluestore_bluefs_env_mirror) {
             rocksdb::Env* a = new BlueRocksEnv(bluefs);
@@ -5049,6 +5046,7 @@ int BlueStore::_prepare_db_environment(bool create, bool read_only, std::string*
             // simplify the dir names, too, as "seen" by rocksdb
             fn = "db";
         }
+
         BlueFSVolumeSelector::paths paths;
         bluefs->get_vselector_paths(fn, paths);
 
@@ -5117,6 +5115,8 @@ int BlueStore::_prepare_db_environment(bool create, bool read_only, std::string*
         // under this case
         delete env;
         env = NULL;
+
+        LOG_ROOT_ERR(-EIO, "BlueStore: failed to create db");
         return -EIO;
     }
 
