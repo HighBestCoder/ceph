@@ -4910,6 +4910,7 @@ int BlueStore::_open_db_and_around(bool read_only, bool to_repair) {
 
     // open in read-only first to read FM list and init allocator
     // as they might be needed for some BlueFS procedures
+    LOG(CEPH_INFO, "_opendb(create=false, to_repair_db=false, read_only=true)");
     r = _open_db(false /*create*/, false /*to_repair_db*/, true /*read_only*/);
     if (r < 0) {
         LOG_CHECK_ERR(r);
@@ -5005,12 +5006,10 @@ int BlueStore::_prepare_db_environment(bool create, bool read_only, std::string*
         kv_backend = cct->_conf->bluestore_kvbackend;
     } else {
         r = read_meta("kv_backend", &kv_backend);
-        if (r < 0) {
-            derr << __func__ << " unable to read 'kv_backend' meta" << dendl;
-            return -EIO;
-        }
+        LOG_CHECK_ERR_RETURN(r);
     }
-    dout(10) << __func__ << " kv_backend = " << kv_backend << dendl;
+
+    LOG(CEPH_INFO, "bluestore_kvbackend = %s", kv_backend.c_str());
 
     bool do_bluefs;
     r = _is_bluefs(create, &do_bluefs);
@@ -5137,10 +5136,8 @@ int BlueStore::_open_db(bool create, bool to_repair_db, bool read_only) {
     string kv_backend;
     std::string sharding_def;
     r = _prepare_db_environment(create, read_only, &kv_dir_fn, &kv_backend);
-    if (r < 0) {
-        derr << __func__ << " failed to prepare db environment: " << err.str() << dendl;
-        return -EIO;
-    }
+    LOG_CHECK_ERR_RETURN(r);
+
     if (kv_backend == "rocksdb") {
         options = cct->_conf->bluestore_rocksdb_options;
         options_annex = cct->_conf->bluestore_rocksdb_options_annex;
