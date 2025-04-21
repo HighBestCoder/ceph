@@ -942,12 +942,73 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
 
     int read_counter = 0;
 
+    LOG(CEPH_INFO, "开始读日志文件:pos = %lu, read_pos = %lu super.block_size = %u", log_reader->buf.pos, log_reader->buf.pos, super.block_size);
+
+    // 我们要读前面2G的数据，然后依次去检查他们的uuid, seq
+    {
+        uint64_t read_pos = 0;
+        uint64_t read_counter = 0;
+        uint64_t uuid_equal_counter = 0;
+        uint64_t min_seq_pos = 0;
+        uint64_t min_seq = 2147483647;
+
+        while (read_pos < 2 * 1024 * 1024 * 1024) {
+            bufferlist bl;
+            int r = _read(log_reader, read_pos, super.block_size, &bl, NULL);
+            if (r != (int)super.block_size) {
+                derr << "[JIYOU] TEST 读取日志文件的第 " << read_counter << " 次，读取的字节数为: " << r << dendl;
+                break;
+            }
+            read_pos += super.block_size;
+
+            /// 读取成功后，尝试去decode这个日志条目
+            uint64_t more = 0;
+            uint64_t seq;
+            uuid_d uuid;
+            {
+                auto p = bl.cbegin();
+                __u8 a, b;
+                uint32_t len;
+                decode(a, p);
+                decode(b, p);
+                decode(len, p);
+                decode(uuid, p);
+                decode(seq, p);
+                if (len + 6 > bl.length()) {
+                    more = round_up_to(len + 6 - bl.length(), super.block_size);
+                }
+            }
+
+            if (uuid != super.uuid) {
+                continue;
+            }
+
+            if (seq < min_seq) {
+                min_seq = seq;
+                min_seq_pos = read_pos;
+            }
+
+            uuid_equal_counter++;
+
+            read_counter++;
+
+            // 输出详细信息
+            auto uuid_str = uuid.to_string();
+            LOG(CEPH_INFO, "读disk[%lu] read_pos:%lu seq:%lu uuid:%s", read_counter, read_pos, seq, uuid_str.c_str());
+        }
+
+        LOG(CEPH_INFO, "读完前2G，uuid_equal_counter = %lu read_counter = %lu", uuid_equal_counter, read_counter);
+        LOG(CEPH_INFO, "最小的seq = %lu 最小的seq_pos = %lu", min_seq, min_seq_pos);
+    }
+
     bool replay_log = true;
     while (replay_log) {
         ceph_assert((log_reader->buf.pos & ~super.block_mask()) == 0);
         uint64_t pos = log_reader->buf.pos;
         uint64_t read_pos = pos;
         bufferlist bl;
+
+        LOG(CEPH_INFO, "开始读日志文件:pos = %lu, read_pos = %lu", pos, read_pos);
 
         {
             /// [1]
@@ -1349,13 +1410,15 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
                     delete log_reader;
                     return -EIO;
             }
-        }
+        }  // end switch
+
         ceph_assert(p.end());
 
         // we successfully replayed the transaction; bump the seq and log size
         ++log_seq;
         log_file->fnode.size = log_reader->buf.pos;
-    }
+    }  // end while: 这个while就是一直读bluefs log文件，然后replay
+
     if (!noop) {
         vselector->add_usage(log_file->vselector_hint, log_file->fnode);
     }
