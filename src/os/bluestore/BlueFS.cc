@@ -955,8 +955,6 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
     ino_last = 1;  // by the log
     log_seq = 0;
 
-    _replay_find_log();
-
     FileRef log_file;
     log_file = _get_file(1);
 
@@ -1012,8 +1010,11 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
 
     LOG(CEPH_INFO, "开始读日志文件:pos = %lu, read_pos = %lu super.block_size = %u", log_reader->buf.pos, log_reader->buf.pos, super.block_size);
 
-    bool replay_log = true;
-    while (replay_log) {
+    // 最多扫描2G的内容
+    constexpr uint64_t max_read_pos = (uint64_t)8 * (uint64_t)1024 * (uint64_t)1024 * (uint64_t)1024;
+
+    // bluefs的log是定要replay的。
+    while (true) {
         ceph_assert((log_reader->buf.pos & ~super.block_mask()) == 0);
         uint64_t pos = log_reader->buf.pos;
         uint64_t read_pos = pos;
@@ -1043,7 +1044,7 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
             ///
             ///  下次 replay 时就会发现，这一块只有一半的数据。
             if (r != (int)super.block_size && cct->_conf->bluefs_replay_recovery) {
-                derr << "[JIYOU] 读取日志文件的第 " << read_counter << " 次，读取的字节数为: " << r << "这里需要做do_replay_recovery_read" << dendl;
+                LOG(CEPH_WARN, "[JIYOU] 读取日志文件的第 %d 次，读取的字节数为: %d < 4096 read_pos: %lu", read_counter, r, read_pos);
                 // 2025-04-18T17:26:31.728+0800 fffd1bceb2c0 -14 expected -1 bluefs replay stop: seq 45507211 0x437000
                 // 2025-04-18T17:26:31.728+0800 fffd1bceb2c0 -14 expected -1 bluefs replay stop: seq 45507212 0x438000
                 // 2025-04-18T17:26:31.728+0800 fffd1bceb2c0 -14 expected -1 bluefs replay stop: seq 45507213 0x439000
@@ -1058,11 +1059,13 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
                 // version 16.2.12(5a2d516ce4b134bfafc80c4274532ac0d56fc1e2)pacific (stable) 2025-04-18T17:26:31.748+0800 fffd1bceb2c0 -1 ***Caught signal(Aborted)in thread fffdlbceb2c0 thread
                 // name:ceph-bluestore
                 r += do_replay_recovery_read(log_reader, pos, read_pos + r, super.block_size - r, &bl);
-            } else {
-                derr << "[JIYOU] 读取日志文件的第 " << read_counter << " 次，读取的字节数为: " << r << dendl;
             }
 
-            assert(r == (int)super.block_size);
+            if (r != (int)super.block_size) {
+                LOG_ROOT_ERR(-1, "Assert 读取日志文件的第 %d 次，读取的字节数为: %d < 4096 read_pos: %lu", read_counter, r, read_pos);
+                assert(r == (int)super.block_size);
+            }
+
             read_pos += r;
         }
 
@@ -1085,27 +1088,34 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
         }
 
         if (uuid != super.uuid) {
-            if (seen_recs) {
-                derr << __func__ << " 0x" << std::hex << pos << std::dec << ": stop: uuid " << uuid << " != super.uuid " << super.uuid << dendl;
+            auto uuid_str = uuid.to_string();
+            auto super_uuid_str = super.uuid.to_string();
+            LOG(CEPH_INFO, "第%d次读日志文件的uuid不匹配，当前uuid: %s, super.uuid: %s", read_counter, uuid_str.c_str(), super_uuid_str.c_str());
+
+            // 这里我们要看一下读的位置，如果读的位置小于 2G，那么我们就继续读，否则就断开
+            if (read_pos < max_read_pos) {
+                // 继续读
+                continue;
             } else {
-                derr << __func__ << " 0x" << std::hex << pos << std::dec << ": stop: uuid " << uuid << " != super.uuid " << super.uuid << ", block dump: \n";
-                bufferlist t;
-                t.substr_of(bl, 0, super.block_size);
-                t.hexdump(*_dout);
-                *_dout << dendl;
+                // 断开
+                break;
             }
-            derr << "[JIYOU] 读取日志文件的第 " << read_counter << " 次，然后发现uuid不匹配" << dendl;
-            // 但是这里我们并不
-            break;
         }
 
+        // 这里我们要输出日志的序列号
+        LOG(CEPH_INFO, "第%d次读日志文件read_pos:%lu 的序列号: %lu", read_counter, read_pos, seq);
+
         if (seq != log_seq + 1) {
-            if (seen_recs) {
-                derr << __func__ << " 0x" << std::hex << pos << std::dec << ": stop: seq " << seq << " != expected " << log_seq + 1 << dendl;
+            LOG(CEPH_INFO, "第%d次读日志文件的序列号不匹配，当前序列号: %lu, 上一个序列号: %lu read_pos: %lu", read_counter, seq, log_seq, read_pos);
+
+            // 这里我们要看一下读的位置，如果读的位置小于 2G，那么我们就继续读，否则就断开
+            if (read_pos < max_read_pos) {
+                // 继续读
+                continue;
             } else {
-                derr << __func__ << " 0x" << std::hex << pos << std::dec << ": stop: seq " << seq << " != expected " << log_seq + 1 << dendl;
+                // 断开
+                break;
             }
-            break;
         }
 
         if (more) {
