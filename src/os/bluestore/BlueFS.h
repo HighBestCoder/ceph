@@ -454,6 +454,8 @@ private:
   int _verify_alloc_granularity(
     __u8 id, uint64_t offset, uint64_t length,
     const char *op);
+
+  int _replay_find_log();
   int _replay(bool noop, bool to_stdout = false); ///< replay journal
 
   FileWriter *_create_writer(FileRef f);

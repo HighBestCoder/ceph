@@ -882,6 +882,8 @@ int BlueFS::_verify_alloc_granularity(__u8 id, uint64_t offset, uint64_t length,
 /// 2025-04-14T16:29:18.245 + 0800 ffff0f8200406 db.slow,
 ///             7600869087846.rocksdb : verify sharding unable to list column families : NotFound
 ///
+int BlueFS::_replay_find_log() {}
+
 int BlueFS::_replay(bool noop, bool to_stdout) {
     dout(10) << __func__ << (noop ? " NO-OP" : "") << dendl;
     ino_last = 1;  // by the log

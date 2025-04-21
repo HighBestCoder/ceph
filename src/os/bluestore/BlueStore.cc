@@ -5162,6 +5162,7 @@ int BlueStore::_open_db(bool create, bool to_repair_db, bool read_only) {
         // column families created.
         r = read_only ? db->open_read_only(err, sharding_def) : db->open(err, sharding_def);
     }
+
     if (r) {
         derr << __func__ << " erroring opening db: " << err.str() << dendl;
         _close_db(read_only);
