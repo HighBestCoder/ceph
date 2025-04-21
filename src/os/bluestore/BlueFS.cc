@@ -627,7 +627,7 @@ int BlueFS::mount() {
 
     int r = _open_super();
     if (r < 0) {
-        derr << __func__ << " failed to open super: " << cpp_strerror(r) << dendl;
+        LOG_ROOT_ERR(r, "failed to open super");
         goto out;
     }
 
@@ -779,6 +779,11 @@ int BlueFS::_open_super() {
     int r;
 
     // always the second block
+    std::string dev_name;
+    bdev[BDEV_DB]->get_devname(&dev_name);
+
+    LOG(CEPH_INFO, "bdev[1].dev_name = %s", dev_name.c_str());
+
     r = bdev[BDEV_DB]->read(get_super_offset(), get_super_length(), &bl, ioc[BDEV_DB], false);
     if (r < 0) return r;
 
@@ -794,8 +799,29 @@ int BlueFS::_open_super() {
         derr << __func__ << " bad crc on superblock, expected 0x" << std::hex << expected_crc << " != actual 0x" << crc << std::dec << dendl;
         return -EIO;
     }
-    dout(10) << __func__ << " superblock " << super.version << dendl;
-    dout(10) << __func__ << " log_fnode " << super.log_fnode << dendl;
+    derr << __func__ << " superblock " << super.version << dendl;
+    derr << __func__ << " log_fnode " << super.log_fnode << dendl;
+
+    // 这里我们打印一下super的结构
+    std::string super_uuid_str = super.uuid.to_string();
+    std::string super_osd_uuid_str = super.osd_uuid.to_string();
+    LOG(CEPH_INFO, "super.uuid = %s", super_uuid_str.c_str());
+    LOG(CEPH_INFO, "osd.uuid = %s", super_osd_uuid_str.c_str());
+    LOG(CEPH_INFO, "super.version = %lu", super.version);
+    LOG(CEPH_INFO, "super.block_size = %u", super.block_size);
+
+    // 这里我们打印一下super的log_fnode
+    LOG(CEPH_INFO, "super.log_fnode.ino = %lu", super.log_fnode.ino);
+    LOG(CEPH_INFO, "super.log_fnode.size = %lu", super.log_fnode.size);
+    LOG(CEPH_INFO, "super.log_fnode.allocated = %lu", super.log_fnode.allocated);
+    LOG(CEPH_INFO, "super.log_fnode.allocated_commited = %lu", super.log_fnode.allocated_commited);
+
+    int i = 0;
+    // 接下来打印extents
+    for (auto& e : super.log_fnode.extents) {
+        LOG(CEPH_INFO, "super.log_fnode.extents[%d] = {.offset = %lu, .length=%lu, bdev=%d}", i++, e.offset, e.length, e.bdev);
+    }
+
     return 0;
 }
 
@@ -1091,15 +1117,7 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
             auto uuid_str = uuid.to_string();
             auto super_uuid_str = super.uuid.to_string();
             LOG(CEPH_INFO, "第%d次读日志文件的uuid不匹配，当前uuid: %s, super.uuid: %s", read_counter, uuid_str.c_str(), super_uuid_str.c_str());
-
-            // 这里我们要看一下读的位置，如果读的位置小于 2G，那么我们就继续读，否则就断开
-            if (read_pos < max_read_pos) {
-                // 继续读
-                continue;
-            } else {
-                // 断开
-                break;
-            }
+            break;
         }
 
         // 这里我们要输出日志的序列号
@@ -1107,15 +1125,7 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
 
         if (seq != log_seq + 1) {
             LOG(CEPH_INFO, "第%d次读日志文件的序列号不匹配，当前序列号: %lu, 上一个序列号: %lu read_pos: %lu", read_counter, seq, log_seq, read_pos);
-
-            // 这里我们要看一下读的位置，如果读的位置小于 2G，那么我们就继续读，否则就断开
-            if (read_pos < max_read_pos) {
-                // 继续读
-                continue;
-            } else {
-                // 断开
-                break;
-            }
+            break;
         }
 
         if (more) {

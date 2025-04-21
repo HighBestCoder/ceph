@@ -4870,7 +4870,8 @@ int BlueStore::_is_bluefs(bool create, bool* ret) {
  * in the proper order
  */
 int BlueStore::_open_db_and_around(bool read_only, bool to_repair) {
-    dout(0) << __func__ << " read-only:" << read_only << " repair:" << to_repair << dendl;
+    LOG(CEPH_INFO, "BlueStore::_open_db_and_around to_repair_db=%d, read_only=%d", to_repair, read_only);
+
     {
         string type;
         int r = read_meta("type", &type);
