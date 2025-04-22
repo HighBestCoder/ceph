@@ -22,11 +22,12 @@
 
 constexpr size_t READ_BLOCK_SIZE = 4 * 1024 * 1024;
 constexpr size_t PROCESS_BLOCK_SIZE = 4 * 1024;
-constexpr size_t NUM_THREADS = 64;
+constexpr size_t NUM_THREADS = 256;
 
 struct Result {
     off_t offset;
     uint64_t seq;
+    off_t internal_offset;
 };
 
 std::string parse_uuid_to_bytes(const std::string& uuid_str) {
@@ -140,7 +141,14 @@ void scan_range_libaio(const std::string& path, const std::string& uuid_bytes, o
                     uint64_t seq;
                     std::memcpy(&seq, found_ptr + uuid_bytes.size(), sizeof(seq));
                     Result res{static_cast<off_t>(offset + static_cast<off_t>(i * PROCESS_BLOCK_SIZE)), seq};
+
+                    // off_t found_block_offset = offset + i * PROCESS_BLOCK_SIZE;
+                    off_t internal_offset = static_cast<const char*>(found) - static_cast<const char*>(block);
+                    res.internal_offset = internal_offset;
+
+                    // 这里加点输出
                     std::lock_guard<std::mutex> lock(results_mutex);
+                    std::cout << "Found UUID at offset: " << res.offset << ", seq: " << res.seq << ", internal_offset: " << res.internal_offset << "\n";
                     results.push_back(res);
                 }
             }
@@ -191,7 +199,7 @@ int main(int argc, char* argv[]) {
     std::sort(results.begin(), results.end(), [](const Result& a, const Result& b) { return a.offset < b.offset; });
 
     for (const auto& r : results) {
-        std::cout << "Found UUID at offset: " << r.offset << ", seq: " << r.seq << "\n";
+        std::cout << "Found UUID at offset: " << r.offset << ", seq: " << r.seq << ", internal_offset: " << r.internal_offset << "\n";
     }
 
     return 0;
