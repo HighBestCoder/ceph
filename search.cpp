@@ -1,18 +1,25 @@
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <iostream>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 constexpr size_t READ_BLOCK_SIZE = 4 * 1024 * 1024;
 constexpr size_t PROCESS_BLOCK_SIZE = 4 * 1024;
+constexpr size_t NUM_THREADS = 64;
 
 std::string parse_uuid_to_bytes(const std::string& uuid_str) {
     std::string hex;
@@ -49,6 +56,55 @@ const void* fast_memmem(const void* haystack, size_t haystacklen, const void* ne
     return nullptr;
 }
 
+struct Result {
+    off_t offset;
+    uint64_t seq;
+};
+
+void scan_range(int fd, const std::string& uuid_bytes, off_t start_offset, off_t end_offset, std::vector<Result>& results, std::mutex& results_mutex) {
+    void* buffer = nullptr;
+    if (posix_memalign(&buffer, 4096, READ_BLOCK_SIZE) != 0) {
+        perror("posix_memalign");
+        return;
+    }
+
+    for (off_t offset = start_offset; offset < end_offset; offset += READ_BLOCK_SIZE) {
+        ssize_t bytes_to_read = std::min(static_cast<off_t>(READ_BLOCK_SIZE), end_offset - offset);
+        ssize_t bytes_read = pread(fd, buffer, bytes_to_read, offset);
+        if (bytes_read < 0) {
+            perror("pread");
+            continue;
+        }
+        size_t blocks = bytes_read / PROCESS_BLOCK_SIZE;
+        for (size_t i = 0; i < blocks; ++i) {
+            char* block = static_cast<char*>(buffer) + i * PROCESS_BLOCK_SIZE;
+            const void* found = fast_memmem(block, PROCESS_BLOCK_SIZE, uuid_bytes.data(), uuid_bytes.size());
+            if (found) {
+                const char* found_ptr = static_cast<const char*>(found);
+                if (found_ptr + uuid_bytes.size() + 8 <= block + PROCESS_BLOCK_SIZE) {
+                    uint64_t seq;
+                    std::memcpy(&seq, found_ptr + uuid_bytes.size(), sizeof(seq));
+                    Result res{offset + i * PROCESS_BLOCK_SIZE, seq};
+
+                    std::lock_guard<std::mutex> lock(results_mutex);
+                    results.push_back(res);
+                }
+            }
+        }
+    }
+
+    free(buffer);
+}
+
+off_t get_file_size(const std::string& path) {
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) {
+        perror("stat");
+        return -1;
+    }
+    return st.st_size;
+}
+
 int main(int argc, char* argv[]) {
     if (argc != 3) {
         std::cerr << "Usage: " << argv[0] << " /dev/sdX <uuid>\n";
@@ -56,9 +112,9 @@ int main(int argc, char* argv[]) {
     }
 
     std::string disk_path = argv[1];
-    std::string uuid_str;
+    std::string uuid_bytes;
     try {
-        uuid_str = parse_uuid_to_bytes(argv[2]);
+        uuid_bytes = parse_uuid_to_bytes(argv[2]);
     } catch (const std::exception& e) {
         std::cerr << "Error parsing UUID: " << e.what() << "\n";
         return 1;
@@ -66,43 +122,38 @@ int main(int argc, char* argv[]) {
 
     int fd = open(disk_path.c_str(), O_RDONLY | O_DIRECT);
     if (fd < 0) {
-        perror("open disk");
+        perror("open");
         return 1;
     }
 
-    void* buffer = nullptr;
-    if (posix_memalign(&buffer, 4096, READ_BLOCK_SIZE) != 0) {
-        perror("posix_memalign");
+    off_t file_size = get_file_size(disk_path);
+    if (file_size <= 0) {
+        std::cerr << "Invalid file size.\n";
         close(fd);
         return 1;
     }
 
-    size_t block_index = 0;
-    while (true) {
-        off_t offset = block_index * READ_BLOCK_SIZE;
-        ssize_t bytes_read = pread(fd, buffer, READ_BLOCK_SIZE, offset);
-        if (bytes_read < 0) {
-            perror("pread");
-            break;
-        }
-        if (bytes_read == 0) {
-            break;  // EOF
-        }
+    off_t segment_size = file_size / NUM_THREADS;
+    std::vector<std::thread> threads;
+    std::vector<Result> results;
+    std::mutex results_mutex;
 
-        size_t blocks = bytes_read / PROCESS_BLOCK_SIZE;
-        for (size_t i = 0; i < blocks; ++i) {
-            char* block = static_cast<char*>(buffer) + i * PROCESS_BLOCK_SIZE;
-            const void* found = fast_memmem(block, PROCESS_BLOCK_SIZE, uuid_str.data(), uuid_str.size());
-            if (found) {
-                off_t found_block_offset = offset + i * PROCESS_BLOCK_SIZE;
-                off_t internal_offset = static_cast<const char*>(found) - static_cast<const char*>(block);
-                std::cout << "Found UUID in block starting at offset: " << found_block_offset << " internal_offset:" << internal_offset << "\n";
-            }
-        }
-        ++block_index;
+    for (size_t i = 0; i < NUM_THREADS; ++i) {
+        off_t start = i * segment_size;
+        off_t end = (i == NUM_THREADS - 1) ? file_size : (i + 1) * segment_size;
+        threads.emplace_back(scan_range, fd, std::ref(uuid_bytes), start, end, std::ref(results), std::ref(results_mutex));
     }
 
-    free(buffer);
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    std::sort(results.begin(), results.end(), [](const Result& a, const Result& b) { return a.offset < b.offset; });
+
+    for (const auto& r : results) {
+        std::cout << "Found UUID at offset: " << r.offset << ", seq: " << r.seq << "\n";
+    }
+
     close(fd);
     return 0;
 }
