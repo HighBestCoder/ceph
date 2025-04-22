@@ -1,5 +1,6 @@
 #include <fcntl.h>
-#include <linux/fs.h>  // for BLKGETSIZE64
+#include <libaio.h>
+#include <linux/fs.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -22,6 +23,11 @@
 constexpr size_t READ_BLOCK_SIZE = 4 * 1024 * 1024;
 constexpr size_t PROCESS_BLOCK_SIZE = 4 * 1024;
 constexpr size_t NUM_THREADS = 64;
+
+struct Result {
+    off_t offset;
+    uint64_t seq;
+};
 
 std::string parse_uuid_to_bytes(const std::string& uuid_str) {
     std::string hex;
@@ -58,46 +64,6 @@ const void* fast_memmem(const void* haystack, size_t haystacklen, const void* ne
     return nullptr;
 }
 
-struct Result {
-    off_t offset;
-    uint64_t seq;
-};
-
-void scan_range(int fd, const std::string& uuid_bytes, off_t start_offset, off_t end_offset, std::vector<Result>& results, std::mutex& results_mutex) {
-    void* buffer = nullptr;
-    if (posix_memalign(&buffer, 4096, READ_BLOCK_SIZE) != 0) {
-        perror("posix_memalign");
-        return;
-    }
-
-    for (off_t offset = start_offset; offset < end_offset; offset += READ_BLOCK_SIZE) {
-        ssize_t bytes_to_read = std::min(static_cast<off_t>(READ_BLOCK_SIZE), end_offset - offset);
-        ssize_t bytes_read = pread(fd, buffer, bytes_to_read, offset);
-        if (bytes_read < 0) {
-            perror("pread");
-            continue;
-        }
-        size_t blocks = bytes_read / PROCESS_BLOCK_SIZE;
-        for (size_t i = 0; i < blocks; ++i) {
-            char* block = static_cast<char*>(buffer) + i * PROCESS_BLOCK_SIZE;
-            const void* found = fast_memmem(block, PROCESS_BLOCK_SIZE, uuid_bytes.data(), uuid_bytes.size());
-            if (found) {
-                const char* found_ptr = static_cast<const char*>(found);
-                if (found_ptr + uuid_bytes.size() + 8 <= block + PROCESS_BLOCK_SIZE) {
-                    uint64_t seq;
-                    std::memcpy(&seq, found_ptr + uuid_bytes.size(), sizeof(seq));
-                    Result res{offset + i * PROCESS_BLOCK_SIZE, seq};
-
-                    std::lock_guard<std::mutex> lock(results_mutex);
-                    results.push_back(res);
-                }
-            }
-        }
-    }
-
-    free(buffer);
-}
-
 int64_t get_file_size(const std::string& path) {
     struct stat stat_buf;
     int64_t stat_size = -1;
@@ -106,10 +72,9 @@ int64_t get_file_size(const std::string& path) {
         stat_size = stat_buf.st_size;
     }
 
-    // Open the file to attempt ioctl
     int fd = open(path.c_str(), O_RDONLY);
     if (fd < 0) {
-        return stat_size;  // fallback to stat size if open fails
+        return stat_size;
     }
 
     uint64_t ioctl_size = 0;
@@ -120,6 +85,71 @@ int64_t get_file_size(const std::string& path) {
 
     close(fd);
     return stat_size;
+}
+
+void scan_range_libaio(const std::string& path, const std::string& uuid_bytes, off_t start_offset, off_t end_offset, std::vector<Result>& results, std::mutex& results_mutex) {
+    int fd = open(path.c_str(), O_RDONLY | O_DIRECT);
+    if (fd < 0) {
+        perror("open (thread)");
+        return;
+    }
+
+    io_context_t ctx = {};
+    if (io_setup(1, &ctx) < 0) {
+        perror("io_setup");
+        close(fd);
+        return;
+    }
+
+    void* buffer = nullptr;
+    if (posix_memalign(&buffer, 4096, READ_BLOCK_SIZE) != 0) {
+        perror("posix_memalign");
+        io_destroy(ctx);
+        close(fd);
+        return;
+    }
+
+    for (off_t offset = start_offset; offset < end_offset; offset += READ_BLOCK_SIZE) {
+        off_t chunk_size = std::min((off_t)READ_BLOCK_SIZE, end_offset - offset);
+
+        struct iocb cb{}, *cbs[1] = {&cb};
+        io_prep_pread(&cb, fd, buffer, chunk_size, offset);
+
+        if (io_submit(ctx, 1, cbs) < 0) {
+            perror("io_submit");
+            continue;
+        }
+
+        struct io_event events[1];
+        int ret = io_getevents(ctx, 1, 1, events, nullptr);
+        if (ret < 0) {
+            perror("io_getevents");
+            continue;
+        }
+
+        ssize_t bytes_read = events[0].res;
+        if (bytes_read <= 0) continue;
+
+        size_t blocks = bytes_read / PROCESS_BLOCK_SIZE;
+        for (size_t i = 0; i < blocks; ++i) {
+            char* block = static_cast<char*>(buffer) + i * PROCESS_BLOCK_SIZE;
+            const void* found = fast_memmem(block, PROCESS_BLOCK_SIZE, uuid_bytes.data(), uuid_bytes.size());
+            if (found) {
+                const char* found_ptr = static_cast<const char*>(found);
+                if (found_ptr + uuid_bytes.size() + 8 <= block + PROCESS_BLOCK_SIZE) {
+                    uint64_t seq;
+                    std::memcpy(&seq, found_ptr + uuid_bytes.size(), sizeof(seq));
+                    Result res{static_cast<off_t>(offset + static_cast<off_t>(i * PROCESS_BLOCK_SIZE)), seq};
+                    std::lock_guard<std::mutex> lock(results_mutex);
+                    results.push_back(res);
+                }
+            }
+        }
+    }
+
+    free(buffer);
+    io_destroy(ctx);
+    close(fd);
 }
 
 int main(int argc, char* argv[]) {
@@ -137,16 +167,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    int fd = open(disk_path.c_str(), O_RDONLY | O_DIRECT);
-    if (fd < 0) {
-        perror("open");
-        return 1;
-    }
-
     off_t file_size = get_file_size(disk_path);
     if (file_size <= 0) {
         std::cerr << "Invalid file size.\n";
-        close(fd);
         return 1;
     }
 
@@ -158,7 +181,7 @@ int main(int argc, char* argv[]) {
     for (size_t i = 0; i < NUM_THREADS; ++i) {
         off_t start = i * segment_size;
         off_t end = (i == NUM_THREADS - 1) ? file_size : (i + 1) * segment_size;
-        threads.emplace_back(scan_range, fd, std::ref(uuid_bytes), start, end, std::ref(results), std::ref(results_mutex));
+        threads.emplace_back(scan_range_libaio, std::ref(disk_path), std::ref(uuid_bytes), start, end, std::ref(results), std::ref(results_mutex));
     }
 
     for (auto& t : threads) {
@@ -171,6 +194,5 @@ int main(int argc, char* argv[]) {
         std::cout << "Found UUID at offset: " << r.offset << ", seq: " << r.seq << "\n";
     }
 
-    close(fd);
     return 0;
 }
