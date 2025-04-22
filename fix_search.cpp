@@ -91,7 +91,7 @@ int main(int argc, char* argv[]) {
     }
 
     void* buffer = nullptr;
-    if (posix_memalign(&buffer, 4096, READ_BLOCK_SIZE) != 0) {
+    if (posix_memalign(&buffer, READ_BLOCK_SIZE, READ_BLOCK_SIZE) != 0) {
         perror("posix_memalign");
         close(fd);
         return 1;
