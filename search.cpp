@@ -1,4 +1,6 @@
 #include <fcntl.h>
+#include <linux/fs.h>  // for BLKGETSIZE64
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -96,13 +98,28 @@ void scan_range(int fd, const std::string& uuid_bytes, off_t start_offset, off_t
     free(buffer);
 }
 
-off_t get_file_size(const std::string& path) {
-    struct stat st;
-    if (stat(path.c_str(), &st) != 0) {
-        perror("stat");
-        return -1;
+int64_t get_file_size(const std::string& path) {
+    struct stat stat_buf;
+    int64_t stat_size = -1;
+
+    if (stat(path.c_str(), &stat_buf) == 0) {
+        stat_size = stat_buf.st_size;
     }
-    return st.st_size;
+
+    // Open the file to attempt ioctl
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0) {
+        return stat_size;  // fallback to stat size if open fails
+    }
+
+    uint64_t ioctl_size = 0;
+    if (ioctl(fd, BLKGETSIZE64, &ioctl_size) == 0) {
+        close(fd);
+        return std::max(stat_size, static_cast<int64_t>(ioctl_size));
+    }
+
+    close(fd);
+    return stat_size;
 }
 
 int main(int argc, char* argv[]) {
