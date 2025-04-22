@@ -981,6 +981,26 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
     ino_last = 1;  // by the log
     log_seq = 0;
 
+    if (0) {
+        uint8_t dev_backup = super.log_fnode.extents[0].bdev;
+        // super.log_fnode.extents.clear();
+        uint64_t offset = 135168;
+        uint64_t length = 65536;
+        super.log_fnode.extents[0].offset = offset;
+        super.log_fnode.extents[0].length = length;
+        super.log_fnode.extents[0].bdev = dev_backup;
+
+        offset = 3452829696ULL;
+        length = 65536;
+        // super.log_fnode.extents.push_back({dev_backup, offset, length});
+        super.log_fnode.extents[1].offset = offset;
+        super.log_fnode.extents[1].length = length;
+        super.log_fnode.extents[1].bdev = dev_backup;
+
+        super.log_fnode.allocated = 65536 + 65536;
+        super.log_fnode.allocated_commited = 65536 + 65536;
+    }
+
     FileRef log_file;
     log_file = _get_file(1);
 
@@ -1037,7 +1057,7 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
     LOG(CEPH_INFO, "开始读日志文件:pos = %lu, read_pos = %lu super.block_size = %u", log_reader->buf.pos, log_reader->buf.pos, super.block_size);
 
     // 最多扫描2G的内容
-    constexpr uint64_t max_read_pos = (uint64_t)8 * (uint64_t)1024 * (uint64_t)1024 * (uint64_t)1024;
+    uint64_t max_read_pos = super.log_fnode.size;
 
     // bluefs的log是定要replay的。
     while (true) {
@@ -1045,8 +1065,6 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
         uint64_t pos = log_reader->buf.pos;
         uint64_t read_pos = pos;
         bufferlist bl;
-
-        LOG(CEPH_INFO, "开始读日志文件:pos = %lu, read_pos = %lu", pos, read_pos);
 
         {
             /// [1]
@@ -1114,19 +1132,27 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
         }
 
         if (uuid != super.uuid) {
-            auto uuid_str = uuid.to_string();
-            auto super_uuid_str = super.uuid.to_string();
-            LOG(CEPH_INFO, "第%d次读日志文件的uuid不匹配，当前uuid: %s, super.uuid: %s", read_counter, uuid_str.c_str(), super_uuid_str.c_str());
-            break;
+            if (read_pos > max_read_pos) {
+                break;
+            } else {
+                continue;
+            }
+        }
+
+        LOG(CEPH_INFO, "第%d次读日志文件的uuid匹配，当前序列号: %lu, 上一个序列号: %lu read_pos: %lu", read_counter, seq, log_seq, read_pos);
+
+        if (seq != log_seq + 1) {
+            LOG(CEPH_INFO, "第%d次读日志文件的序列号不匹配，当前序列号: %lu, 上一个序列号: %lu read_pos: %lu", read_counter, seq, log_seq, read_pos);
+
+            if (read_pos > max_read_pos) {
+                break;
+            } else {
+                continue;
+            }
         }
 
         // 这里我们要输出日志的序列号
         LOG(CEPH_INFO, "第%d次读日志文件read_pos:%lu 的序列号: %lu", read_counter, read_pos, seq);
-
-        if (seq != log_seq + 1) {
-            LOG(CEPH_INFO, "第%d次读日志文件的序列号不匹配，当前序列号: %lu, 上一个序列号: %lu read_pos: %lu", read_counter, seq, log_seq, read_pos);
-            break;
-        }
 
         if (more) {
             derr << __func__ << " need 0x" << std::hex << more << std::dec << " more bytes" << dendl;
@@ -1889,8 +1915,10 @@ int64_t BlueFS::_read(FileReader* h,      ///< [in] read from here
                 // it makes it in sync with logic in _flush_range()
                 bool use_buffered_io = h->file->fnode.ino == 1 ? false : cct->_conf->bluefs_buffered_io;
                 if (!cct->_conf->bluefs_check_for_zeros) {
+                    LOG(CEPH_INFO, "[1] disk read: offset = %lu, length = %lu, bdev = %d", p->offset + x_off, l, p->bdev);
                     r = bdev[p->bdev]->read(p->offset + x_off, l, &buf->bl, ioc[p->bdev], use_buffered_io);
                 } else {
+                    LOG(CEPH_INFO, "[2] disk read: offset = %lu, length = %lu, bdev = %d", p->offset + x_off, l, p->bdev);
                     r = read(p->bdev, p->offset + x_off, l, &buf->bl, ioc[p->bdev], use_buffered_io);
                 }
                 ceph_assert(r == 0);
