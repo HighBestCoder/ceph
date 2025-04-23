@@ -1099,12 +1099,14 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
     uint64_t max_jump_seq = 0;
     uint64_t max_jump_offset = 0;
 
-    for (auto offset : offsets) {
+    std::map<uint64_t /*jump_seq*/, uint64_t /*disk_offset*/> jump_seq_offset_map;
+
+    for (auto disk_offset : offsets) {
         // 读取日志头部数据块
         bufferlist bl;
-        int r = bdev[BDEV_DB]->read(offset, super.block_size, &bl, ioc[BDEV_DB], false);
+        int r = bdev[BDEV_DB]->read(disk_offset, super.block_size, &bl, ioc[BDEV_DB], false);
         if (r < 0) {
-            LOG(CEPH_WARN, "读取 offset 0x%lx 失败: %s", offset, cpp_strerror(r));
+            LOG(CEPH_WARN, "读取 offset 0x%lx 失败: %s", disk_offset, cpp_strerror(r));
             continue;
         }
 
@@ -1122,7 +1124,7 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
             decode(uuid, p);
             decode(seq, p);
 
-            LOG(CEPH_INFO, "找到日志头: offset = %lu, seq = %lu, uuid = %s", offset, seq, uuid.to_string().c_str());
+            LOG(CEPH_INFO, "找到日志头: offset = %lu, seq = %lu, uuid = %s", disk_offset, seq, uuid.to_string().c_str());
 
             // 验证UUID
             if (uuid != super.uuid) {
@@ -1138,9 +1140,9 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
             // 如果需要读取更多数据
             if (more > 0) {
                 bufferlist more_bl;
-                r = bdev[BDEV_DB]->read(offset + super.block_size, more, &more_bl, ioc[BDEV_DB], false);
+                r = bdev[BDEV_DB]->read(disk_offset + super.block_size, more, &more_bl, ioc[BDEV_DB], false);
                 if (r < 0) {
-                    LOG(CEPH_WARN, "读取pos:%lu 更多数据失败: %s", offset + super.block_size, cpp_strerror(r));
+                    LOG(CEPH_WARN, "读取pos:%lu 更多数据失败: %s", disk_offset + super.block_size, cpp_strerror(r));
                     continue;
                 }
                 bl.claim_append(more_bl);
@@ -1164,13 +1166,8 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
                             uint64_t jump_seq;
                             decode(jump_seq, op_p);
 
-                            LOG(CEPH_INFO, "找到offset:%lu jump_seq = %lu", offset, jump_seq);
-
-                            // 更新最大JUMP_SEQ值
-                            if (jump_seq > max_jump_seq) {
-                                max_jump_seq = jump_seq;
-                                max_jump_offset = offset;
-                            }
+                            jump_seq_offset_map[jump_seq] = disk_offset + 4096;
+                            LOG(CEPH_INFO, "[OP_JUMP_SEQ 找到jump_seq = %lu, offset = %lu", jump_seq, disk_offset + 4096);
                         } else {
                             // 跳过其他操作类型的参数
                             switch (op) {
@@ -1209,6 +1206,10 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
                                     uint64_t next_seq, offset;
                                     decode(next_seq, op_p);
                                     decode(offset, op_p);
+
+                                    LOG(CEPH_INFO, "[OP_JUMP] 找到jump_seq = %lu, offset = %lu", next_seq, offset);
+                                    jump_seq_offset_map[next_seq] = offset;
+
                                 } break;
                                 case bluefs_transaction_t::OP_JUMP_SEQ: {
                                     uint64_t next_seq;
@@ -1232,7 +1233,11 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
         }
     }
 
-    LOG(CEPH_INFO, "found max jump_seq %lu at offset 0x%lx", max_jump_seq, max_jump_offset);
+    // 这里打印map
+    LOG(CEPH_INFO, "jump_seq_offset_map:");
+    for (auto& p : jump_seq_offset_map) {
+        LOG(CEPH_INFO, "[MAP] jump_seq = %lu, offset = %lu", p.first, p.second);
+    }
 
     return max_jump_offset;
 }
@@ -1241,6 +1246,12 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
     dout(10) << __func__ << (noop ? " NO-OP" : "") << dendl;
     ino_last = 1;  // by the log
     log_seq = 0;
+
+    //     if (!cct->_conf->bluefs_replay_recovery_disable_compact && _should_compact_log()) {
+    // if (cct->_conf->bluefs_compact_log_sync) {
+    // 输出这两个变量
+    LOG(CEPH_INFO, "bluefs_compact_log_sync = %d", cct->_conf->bluefs_compact_log_sync);
+    LOG(CEPH_INFO, "bluefs_replay_recovery_disable_compact = %d", cct->_conf->bluefs_replay_recovery_disable_compact);
 
     if (0) {
         uint8_t dev_backup = super.log_fnode.extents[0].bdev;
@@ -1469,6 +1480,12 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
         while (!p.end()) {
             __u8 op;
             decode(op, p);
+
+            if (seq == 1) {
+                // get op name
+                const char* op_name = t.get_op_name(op);
+                LOG(CEPH_INFO, "JIYOU op_name: %s", op_name);
+            }
             switch (op) {
                 case bluefs_transaction_t::OP_INIT:
                     dout(20) << __func__ << " 0x" << std::hex << pos << std::dec << ":  op_init" << dendl;
@@ -1509,6 +1526,8 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
                     if (unlikely(to_stdout)) {
                         std::cout << " 0x" << std::hex << pos << std::dec << ":  op_jump_seq " << next_seq << std::endl;
                     }
+
+                    LOG(CEPH_INFO, "JIYOU OP_JUMP_SEQ offset: %lu, next_seq: %lu", read_pos, next_seq);
 
                     ceph_assert(next_seq >= log_seq);
                     log_seq = next_seq - 1;  // we will increment it below
@@ -2267,16 +2286,7 @@ void BlueFS::compact_log() {
     }
 }
 
-bool BlueFS::_should_compact_log() {
-    uint64_t current = log_writer->file->fnode.size;
-    uint64_t expected = _estimate_log_size();
-    float ratio = (float)current / (float)expected;
-    dout(10) << __func__ << " current 0x" << std::hex << current << " expected " << expected << std::dec << " ratio " << ratio << (new_log ? " (async compaction in progress)" : "") << dendl;
-    if (new_log || current < cct->_conf->bluefs_log_compact_min_size || ratio < cct->_conf->bluefs_log_compact_min_ratio) {
-        return false;
-    }
-    return true;
-}
+bool BlueFS::_should_compact_log() { return (log_seq % 100 == 0); }
 
 /**
  * @brief 为日志压缩操作生成元数据事务
@@ -2360,6 +2370,7 @@ void BlueFS::_compact_log_dump_metadata(bluefs_transaction_t* t, int flags) {
 void BlueFS::_compact_log_sync() {
     dout(10) << __func__ << dendl;
     auto prefer_bdev = vselector->select_prefer_bdev(log_writer->file->vselector_hint);
+    dout(1) << "JIYOU BDEV_DB: " << BDEV_DB << " BDEV_SLOW: " << BDEV_SLOW << " prefer_bdev: " << prefer_bdev << dendl;
     _rewrite_log_and_layout_sync(true, BDEV_DB, prefer_bdev, prefer_bdev, 0, super.memorized_layout);
     logger->inc(l_bluefs_log_compactions);
 }
@@ -2370,11 +2381,11 @@ void BlueFS::_rewrite_log_and_layout_sync(bool allocate_with_fallback, int super
     // clear out log (be careful who calls us!!!)
     log_t.clear();
 
-    dout(20) << __func__ << " super_dev:" << super_dev << " log_dev:" << log_dev << " log_dev_new:" << log_dev_new << " flags:" << flags << dendl;
+    dout(1) << __func__ << " JIYOU super_dev:" << super_dev << " log_dev:" << log_dev << " log_dev_new:" << log_dev_new << " flags:" << flags << dendl;
     bluefs_transaction_t t;
     _compact_log_dump_metadata(&t, flags);
 
-    dout(20) << __func__ << " op_jump_seq " << log_seq << dendl;
+    dout(1) << __func__ << " JIYOU  添加了 op_jump_seq " << log_seq << dendl;
 
     /// 这个代码很重要，因为log_seq是一个全局变量，表示当前日志的序列号。
     /// 并且log_seq应该是全局递增的.
@@ -2386,15 +2397,17 @@ void BlueFS::_rewrite_log_and_layout_sync(bool allocate_with_fallback, int super
     _pad_bl(bl);
 
     uint64_t need = bl.length() + cct->_conf->bluefs_max_log_runway;
-    dout(20) << __func__ << " need " << need << dendl;
+    dout(1) << __func__ << " JIYOU need " << need << ", allocate_with_fallback: " << allocate_with_fallback << dendl;
 
     bluefs_fnode_t old_fnode;
     int r;
     log_file->fnode.swap_extents(old_fnode);
     if (allocate_with_fallback) {
+        dout(1) << __func__ << " JIYOU allocating with fallback" << dendl;
         r = _allocate(log_dev, need, &log_file->fnode);
         ceph_assert(r == 0);
     } else {
+        dout(1) << __func__ << " JIYOU allocating 没有 fallback" << dendl;
         PExtentVector extents;
         r = _allocate_without_fallback(log_dev, need, &extents);
         ceph_assert(r == 0);
@@ -2429,18 +2442,18 @@ void BlueFS::_rewrite_log_and_layout_sync(bool allocate_with_fallback, int super
     super.log_fnode = log_file->fnode;
     // rename device if needed
     if (log_dev != log_dev_new) {
-        dout(10) << __func__ << " renaming log extents to " << log_dev_new << dendl;
+        dout(1) << __func__ << " JIYOU renaming log extents to " << log_dev_new << dendl;
         for (auto& p : super.log_fnode.extents) {
             p.bdev = log_dev_new;
         }
     }
-    dout(10) << __func__ << " writing super, log fnode: " << super.log_fnode << dendl;
+    dout(1) << __func__ << " JIYOU writing super, log fnode: " << super.log_fnode << dendl;
 
     ++super.version;
     _write_super(super_dev);
     flush_bdev();
 
-    dout(10) << __func__ << " release old log extents " << old_fnode.extents << dendl;
+    dout(1) << __func__ << " JIYOU release old log extents " << old_fnode.extents << dendl;
     for (auto& r : old_fnode.extents) {
         pending_release[r.bdev].insert(r.offset, r.length);
     }
@@ -3619,6 +3632,12 @@ int BlueFS::unlink(std::string_view dirname, std::string_view filename) {
     dir->file_map.erase(string{filename});
     log_t.op_dir_unlink(dirname, filename);
     _drop_link(file);
+
+    if (log_seq % 1024 == 0) {
+        dout(1) << "trigger compact log: log_seq = " << log_seq << dendl;
+        _compact_log_sync();
+    }
+
     return 0;
 }
 
