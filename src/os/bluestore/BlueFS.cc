@@ -1100,8 +1100,6 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
     uint64_t max_jump_offset = 0;
 
     for (auto offset : offsets) {
-        LOG(CEPH_INFO, "检查 offset =  0x%lx", offset);
-
         // 读取日志头部数据块
         bufferlist bl;
         int r = bdev[BDEV_DB]->read(offset, super.block_size, &bl, ioc[BDEV_DB], false);
@@ -1158,9 +1156,6 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
                     while (!op_p.end()) {
                         __u8 op;
                         decode(op, op_p);
-
-                        // 输出这个事务的名字
-                        LOG(CEPH_INFO, "op_name: %s", t.get_op_name(op));
 
                         if (op == bluefs_transaction_t::OP_JUMP_SEQ) {
                             // 找到JUMP_SEQ操作，解析目标序列号
