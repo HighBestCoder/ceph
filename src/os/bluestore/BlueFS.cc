@@ -1122,6 +1122,8 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
             decode(uuid, p);
             decode(seq, p);
 
+            LOG(CEPH_INFO, "找到日志头: offset = %lu, seq = %lu, uuid = %s", offset, seq, uuid.to_string().c_str());
+
             // 验证UUID
             if (uuid != super.uuid) {
                 LOG(CEPH_WARN, "发现 UUID 不匹配: %s != %s, 跳过", uuid.to_string().c_str(), super.uuid.to_string().c_str());
