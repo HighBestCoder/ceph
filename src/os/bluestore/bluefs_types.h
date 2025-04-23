@@ -244,6 +244,47 @@ struct bluefs_transaction_t {
 
     bluefs_transaction_t() : seq(0) {}
 
+    /**
+     * @brief 获取操作类型的名称字符串
+     *
+     * 根据给定的操作类型返回对应的人类可读名称
+     *
+     * @param op 操作类型枚举值
+     * @return const char* 返回操作的名称字符串
+     */
+    static const char* get_op_name(__u8 op) {
+        switch (op) {
+            case OP_NONE:
+                return "none";
+            case OP_INIT:
+                return "init";
+            case OP_ALLOC_ADD:
+                return "alloc_add";
+            case OP_ALLOC_RM:
+                return "alloc_rm";
+            case OP_DIR_LINK:
+                return "dir_link";
+            case OP_DIR_UNLINK:
+                return "dir_unlink";
+            case OP_DIR_CREATE:
+                return "dir_create";
+            case OP_DIR_REMOVE:
+                return "dir_remove";
+            case OP_FILE_UPDATE:
+                return "file_update";
+            case OP_FILE_REMOVE:
+                return "file_remove";
+            case OP_JUMP:
+                return "jump";
+            case OP_JUMP_SEQ:
+                return "jump_seq";
+            case OP_FILE_UPDATE_INC:
+                return "file_update_inc";
+            default:
+                return "unknown";
+        }
+    }
+
     void clear() { *this = bluefs_transaction_t(); }
     bool empty() const { return op_bl.length() == 0; }
 

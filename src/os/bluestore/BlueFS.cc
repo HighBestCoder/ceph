@@ -1094,19 +1094,19 @@ int BlueFS::_replay_load_seq_offset_map(void) {
  * @return pair<uint64_t, uint64_t> 返回找到的最大jump_seq和对应的offset
  */
 int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
-    dout(10) << __func__ << " checking " << offsets.size() << " possible log start offsets" << dendl;
+    LOG(CEPH_INFO, "一共要检查 %lu 个 log_seq = 1的位置", offsets.size());
 
     uint64_t max_jump_seq = 0;
     uint64_t max_jump_offset = 0;
 
     for (auto offset : offsets) {
-        dout(20) << __func__ << " checking offset 0x" << std::hex << offset << std::dec << dendl;
+        LOG(CEPH_INFO, "检查 offset =  0x%lx", offset);
 
         // 读取日志头部数据块
         bufferlist bl;
         int r = bdev[BDEV_DB]->read(offset, super.block_size, &bl, ioc[BDEV_DB], false);
         if (r < 0) {
-            dout(10) << __func__ << " failed to read offset 0x" << std::hex << offset << std::dec << ": " << cpp_strerror(r) << dendl;
+            LOG(CEPH_WARN, "读取 offset 0x%lx 失败: %s", offset, cpp_strerror(r));
             continue;
         }
 
@@ -1126,7 +1126,7 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
 
             // 验证UUID
             if (uuid != super.uuid) {
-                dout(20) << __func__ << " uuid " << uuid << " != super.uuid " << super.uuid << ", skipping" << dendl;
+                LOG(CEPH_WARN, "发现 UUID 不匹配: %s != %s, 跳过", uuid.to_string().c_str(), super.uuid.to_string().c_str());
                 continue;
             }
 
@@ -1140,7 +1140,7 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
                 bufferlist more_bl;
                 r = bdev[BDEV_DB]->read(offset + super.block_size, more, &more_bl, ioc[BDEV_DB], false);
                 if (r < 0) {
-                    dout(10) << __func__ << " failed to read more at offset 0x" << std::hex << offset + super.block_size << std::dec << ": " << cpp_strerror(r) << dendl;
+                    LOG(CEPH_WARN, "读取pos:%lu 更多数据失败: %s", offset + super.block_size, cpp_strerror(r));
                     continue;
                 }
                 bl.claim_append(more_bl);
@@ -1159,12 +1159,15 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
                         __u8 op;
                         decode(op, op_p);
 
+                        // 输出这个事务的名字
+                        LOG(CEPH_INFO, "op_name: %s", t.get_op_name(op));
+
                         if (op == bluefs_transaction_t::OP_JUMP_SEQ) {
                             // 找到JUMP_SEQ操作，解析目标序列号
                             uint64_t jump_seq;
                             decode(jump_seq, op_p);
 
-                            dout(20) << __func__ << " found jump_seq " << jump_seq << " at offset 0x" << std::hex << offset << std::dec << dendl;
+                            LOG(CEPH_INFO, "找到offset:%lu jump_seq = %lu", offset, jump_seq);
 
                             // 更新最大JUMP_SEQ值
                             if (jump_seq > max_jump_seq) {
@@ -1217,16 +1220,17 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
                                 default:
                                     dout(10) << __func__ << " unknown op " << (int)op << dendl;
                                     op_p.seek(op_p.get_remaining());
+                                    break;
                             }
                         }
                     }
                 }
             } catch (buffer::error& e) {
-                dout(10) << __func__ << " failed to decode transaction: " << e.what() << dendl;
+                LOG(CEPH_WARN, "解析事务失败: %s", e.what());
                 continue;
             }
         } catch (buffer::error& e) {
-            dout(10) << __func__ << " failed to decode log header: " << e.what() << dendl;
+            LOG(CEPH_WARN, "解析日志头失败: %s", e.what());
             continue;
         }
     }
@@ -1260,6 +1264,12 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
         super.log_fnode.allocated = 65536 + 65536;
         super.log_fnode.allocated_commited = 65536 + 65536;
     }
+
+    // 在一开始的时候，就去尝试_replay_load_seq_offset_map
+    _replay_load_seq_offset_map();
+
+    // 尝试找到最新的log_seq=1的那个offset
+    _replay_find_log(_replay_seq_offset_map[1]);
 
     FileRef log_file;
     log_file = _get_file(1);
