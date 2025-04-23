@@ -177,7 +177,12 @@ int main(int argc, char* argv[]) {
         }
         try {
             LogEntry entry = parseLine(currentLine);
-            logEntries.push_back(entry);
+            if (entry.seq == 0 || entry.seq > 58747799600ULL) {
+                std::cerr << "Warning: Invalid seq value on line " << lineNumber << ": " << entry.seq << std::endl;
+                continue;  // 跳过无效的 seq 值
+            } else {
+                logEntries.push_back(entry);
+            }
         } catch (const std::runtime_error& e) {
             // 报告解析错误，但继续处理文件的其余部分
             std::cerr << "Warning: Skipping line " << lineNumber << " due to error: " << e.what() << std::endl;

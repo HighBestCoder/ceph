@@ -64,8 +64,24 @@ struct bluefs_fnode_t {
     uint8_t __unused__;  // was prefer_bdev
     mempool::bluefs::vector<bluefs_extent_t> extents;
 
-    // precalculated logical offsets for extents vector entries
-    // allows fast lookup for extent index by the offset value via upper_bound()
+    /**
+     * @brief 文件逻辑偏移量索引，用于优化offset到extent的查找
+     *
+     * 存储每个extent在文件中的起始逻辑偏移量。extents_index[i]表示
+     * 第i个extent的起始偏移量，通过累加前面所有extents的长度计算得出。
+     *
+     * 工作原理：
+     * - 对于文件中的任意offset，可通过upper_bound()执行二分查找
+     * - 找到大于该offset的第一个索引，然后回退一位
+     * - 确定包含该offset的extent及其在extent内的相对位置
+     *
+     * 例如，对于三个extent(长度分别为1000,2000,3000)：
+     * - extents_index[0] = 0    (第一个extent起始位置)
+     * - extents_index[1] = 1000 (第二个extent起始位置)
+     * - extents_index[2] = 3000 (第三个extent起始位置)
+     *
+     * 此索引将查找复杂度从O(n)降低到O(log n)，对大文件性能提升显著。
+     */
     mempool::bluefs::vector<uint64_t> extents_index;
 
     uint64_t allocated;
