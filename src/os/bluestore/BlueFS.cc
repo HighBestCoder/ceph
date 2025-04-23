@@ -1022,6 +1022,11 @@ int BlueFS::_replay_load_seq_offset_map(void) {
         // 去掉行尾的换行符
         size_t len = strlen(line);
 
+        if (len > 0 && line[len - 1] == '\n') {
+            line[len - 1] = '\0';  // 显式去除换行符
+            len--;
+        }
+
         uint64_t log_seq = 0;
         uint64_t disk_offset = 0;
 
@@ -1032,17 +1037,24 @@ int BlueFS::_replay_load_seq_offset_map(void) {
             i++;
         }
 
-        // 解析log_seq
+        // 解析log_seq时
         while (i < len && !isspace(line[i])) {
-            if (isdigit(line[i])) {
-                log_seq = log_seq * 10 + (line[i] - '0');
-            } else {
-                LOG(CEPH_INFO, "invalid log_seq at line %d: %s", line_no, line);
+            if (!isdigit(line[i])) {
+                LOG_ROOT_ERR(-EINVAL, "invalid log_seq at line %d: %s", line_no, line);
                 fclose(fp);
                 return -EINVAL;
             }
+
+            uint64_t digit = line[i] - '0';
+            if (log_seq > (UINT64_MAX - digit) / 10) {
+                LOG(CEPH_INFO, "log_seq overflow at line %d", line_no);
+                fclose(fp);
+                return -EINVAL;
+            }
+            log_seq = log_seq * 10 + digit;
             i++;
         }
+        // 同理处理disk_offset
 
         // 再跳过空白符
         while (i < len && isspace(line[i])) {

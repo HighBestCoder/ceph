@@ -84,9 +84,9 @@ void print_missing_ranges(const std::unordered_map<uint64_t, std::vector<LogEntr
 // 如果解析失败，可以抛出异常或返回一个可选类型 (这里选择抛出异常)
 LogEntry parseLine(const std::string& line) {
     LogEntry entry;
-    size_t offsetPos = line.rfind("offset: ");
-    size_t seqPos = line.rfind("seq: ");
-    size_t internalOffsetPos = line.rfind("internal_offset: ");
+    size_t offsetPos = line.rfind(" offset: ");
+    size_t seqPos = line.rfind(" seq: ");
+    size_t internalOffsetPos = line.rfind(" internal_offset: ");
 
     // 检查是否找到了所有关键字
     if (offsetPos == std::string::npos || seqPos == std::string::npos || internalOffsetPos == std::string::npos) {
@@ -118,6 +118,35 @@ LogEntry parseLine(const std::string& line) {
     }
 
     return entry;
+}
+
+void write_hashmap_to_file(std::vector<LogEntry>& logEntries) {
+    const char* filename = "/tmp/bluefs_seq_offset_map";
+
+    // 打开文件
+    FILE* file = fopen(filename, "w");
+    if (file == nullptr) {
+        std::cerr << "Error opening file for writing: " << filename << std::endl;
+        return;
+    }
+
+    // 首先拿到所有的log_seq的keys
+
+    for (auto& p : logEntries) {
+        auto log_seq = p.seq;
+        auto offset = p.offset;
+        auto internal_offset = p.internal_offset;
+
+        // 写这两个数据对
+        fprintf(file, "%llu %llu\n", log_seq, offset);
+    }
+
+    // 关闭文件
+    if (fclose(file) != 0) {
+        std::cerr << "Error closing file: " << filename << std::endl;
+    } else {
+        std::cout << "Data written to " << filename << " successfully." << std::endl;
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -163,7 +192,7 @@ int main(int argc, char* argv[]) {
         return a.offset < b.offset;
     });
 
-    std::unordered_map<uint64_t, std::vector<LogEntry>> hash;
+    std::unordered_map<uint64_t /*log_seq*/, std::vector<LogEntry>> hash;
     for (const auto& entry : logEntries) {
         hash[entry.seq].push_back(entry);
     }
@@ -176,6 +205,9 @@ int main(int argc, char* argv[]) {
     }
 
     print_missing_ranges(hash);
+
+    // 写入文件
+    write_hashmap_to_file(logEntries);
 
     return 0;  // 程序成功结束
 }
