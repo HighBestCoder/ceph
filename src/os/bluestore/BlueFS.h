@@ -3,9 +3,13 @@
 #ifndef CEPH_OS_BLUESTORE_BLUEFS_H
 #define CEPH_OS_BLUESTORE_BLUEFS_H
 
+#include <stdint.h>
+
 #include <atomic>
 #include <limits>
 #include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "blk/BlockDevice.h"
 #include "bluefs_types.h"
@@ -384,6 +388,14 @@ class BlueFS {
                            const char* op_name);
     int _verify_alloc_granularity(__u8 id, uint64_t offset, uint64_t length, const char* op);
 
+    /// @brief 这个是从文件里面找到的，所有的log_seq与offset映射关系
+    ///        需要注意的是，同一个log_seq有可能面对多个offset
+    std::unordered_map<uint64_t, std::vector<uint64_t>> _replay_seq_offset_map;
+
+    /// @brief 这个是真正replay成功的log_seq与offset映射关系
+    std::unordered_map<uint64_t, std::vector<uint64_t>> _replay_seq_offset_map_ok;
+
+    int _replay_load_seq_offset_map(void);
     int _replay_find_log(std::vector<uint64_t>& first_log_offset);
     int _replay(bool noop, bool to_stdout = false);  ///< replay journal
 

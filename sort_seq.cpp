@@ -19,6 +19,67 @@ struct LogEntry {
     // }
 };
 
+void print_missing_ranges(const std::unordered_map<uint64_t, std::vector<LogEntry>>& hash) {
+    if (hash.empty()) {
+        std::cout << "The hash map is empty." << std::endl;
+        return;
+    }
+
+    // 收集所有键并排序
+    std::vector<uint64_t> keys;
+    keys.reserve(hash.size());
+    for (const auto& pair : hash) {
+        keys.push_back(pair.first);
+    }
+    std::sort(keys.begin(), keys.end());
+
+    std::vector<std::pair<uint64_t, uint64_t>> missing_ranges;
+
+    // 检查初始区间（从1开始）
+    uint64_t start_range = 1;
+    auto it = keys.begin();
+    while (it != keys.end()) {
+        uint64_t current_key = *it;
+
+        if (current_key > start_range) {
+            // 发现缺失区间
+            missing_ranges.emplace_back(start_range, current_key - 1);
+        }
+
+        // 更新下一个预期起始点
+        start_range = current_key + 1;
+        ++it;
+    }
+
+    // 输出结果
+    for (const auto& range : missing_ranges) {
+        std::cout << range.first;
+        if (range.first != range.second) {
+            std::cout << " " << range.second;
+        }
+        std::cout << " missing";
+        std::cout << std::endl;
+    }
+
+    // 然后我们再从keys的最后往前找，我们希望找到最后一个连续的区间
+    uint64_t last_key = keys.back();
+    std::pair<uint64_t, uint64_t> last_range(last_key, last_key);
+    for (auto it = keys.rbegin(); it != keys.rend(); ++it) {
+        if (*it == last_key - 1) {
+            last_range.first = *it;
+            last_key = *it;
+        } else {
+            break;
+        }
+    }
+
+    std::cout << "last range: ";
+    // 输出最后一个连续区间
+    std::cout << last_range.first;
+    std::cout << " " << last_range.second;
+    std::cout << std::endl;
+}
+
 // 函数：用于解析单行文本并返回 LogEntry 结构体
 // 如果解析失败，可以抛出异常或返回一个可选类型 (这里选择抛出异常)
 LogEntry parseLine(const std::string& line) {
@@ -111,43 +172,10 @@ int main(int argc, char* argv[]) {
     for (const auto& [key, value] : hash) {
         if (value.size() > 1) {
             std::cout << "seq: " << key << " has " << value.size() << " entries:" << std::endl;
-            for (const auto& entry : value) {
-                std::cout << "  offset: " << entry.offset << ", internal_offset: " << entry.internal_offset << std::endl;
-            }
         }
     }
 
-    // 我们还需要找到缺失的seq
-    std::vector<uint64_t> seqs;
-
-    // 首先找最大的seq
-    uint64_t max_seq = 0;
-    for (const auto& [key, value] : hash) {
-        if (key > max_seq) {
-            max_seq = key;
-        }
-    }
-
-    // 检查有没有缺失的seq
-    // 这里假设seq是从1开始的连续整数
-    std::cout << "max_seq: " << max_seq << std::endl;
-    // 然后找出所有的seq
-    for (uint64_t i = 1; i <= max_seq; ++i) {
-        if (hash.find(i) == hash.end()) {
-            seqs.push_back(i);
-        }
-    }
-
-    // 输出缺失的seq
-    if (!seqs.empty()) {
-        std::cout << "Missing seqs: ";
-        for (const auto& seq : seqs) {
-            std::cout << seq << " ";
-        }
-        std::cout << std::endl;
-    } else {
-        std::cout << "No missing seqs." << std::endl;
-    }
+    print_missing_ranges(hash);
 
     return 0;  // 程序成功结束
 }

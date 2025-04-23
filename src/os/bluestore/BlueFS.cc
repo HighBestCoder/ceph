@@ -987,6 +987,94 @@ int BlueFS::_verify_alloc_granularity(__u8 id, uint64_t offset, uint64_t length,
 /// BEGIN
 ///////////////////////////////////////////////////////////////////////////////
 
+/// @brief 这个函数的功能，就是从指定的文件位置读取
+///        log_seq与disk_offset的映射关系
+///        然后把这个映射关系存放到log_seq_offset_map中
+/// @note 这个文件的格式是
+///       log_seq disk_offset
+/// @note 在读取的时候，要特别注意：
+///       1. log_seq和disk_offset之间是用空格分隔的
+///       2. 每一行的末尾是换行符
+///       3. log_seq和disk_offset都是uint64_t类型，字符串转整数的时候，要特别小心，不要溢出
+int BlueFS::_replay_load_seq_offset_map(void) {
+    // 这里可能需要提前准备好文件名
+    const char* filename = "/tmp/bluefs_seq_offset_map";
+
+    LOG(CEPH_INFO, "loading seq-offset map from %s", filename);
+
+    // 打开文件
+    FILE* fp = fopen(filename, "r");
+    if (!fp) {
+        int err = -errno;
+        LOG_ROOT_ERR(err, "failed to open %s: %s", filename, cpp_strerror(err));
+        return err;
+    }
+
+    // 清空现有映射表，以便重新加载
+    _replay_seq_offset_map.clear();
+
+    // 一行一行地读取
+    char line[256];
+    int line_no = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        line_no++;
+
+        // 去掉行尾的换行符
+        size_t len = strlen(line);
+
+        uint64_t log_seq = 0;
+        uint64_t disk_offset = 0;
+
+        // 解析第一个log_seq
+        size_t i = 0;
+        // 跳过之前的空白符
+        while (i < len && isspace(line[i])) {
+            i++;
+        }
+
+        // 解析log_seq
+        while (i < len && !isspace(line[i])) {
+            if (isdigit(line[i])) {
+                log_seq = log_seq * 10 + (line[i] - '0');
+            } else {
+                LOG(CEPH_INFO, "invalid log_seq at line %d: %s", line_no, line);
+                fclose(fp);
+                return -EINVAL;
+            }
+            i++;
+        }
+
+        // 再跳过空白符
+        while (i < len && isspace(line[i])) {
+            i++;
+        }
+
+        // 解析disk_offset
+        while (i < len && !isspace(line[i])) {
+            if (isdigit(line[i])) {
+                disk_offset = disk_offset * 10 + (line[i] - '0');
+            } else {
+                LOG(CEPH_INFO, "invalid disk_offset at line %d: %s", line_no, line);
+                fclose(fp);
+                return -EINVAL;
+            }
+            i++;
+        }
+
+        if (log_seq == 0 && disk_offset == 0) {
+            // 这一行都是空的，直接跳过
+            continue;
+        }
+
+        // 将解析的映射添加到map中
+        _replay_seq_offset_map[log_seq].push_back(disk_offset);
+    }
+
+    fclose(fp);
+    LOG(CEPH_INFO, "loaded %lu seq-offset mappings", _replay_seq_offset_map.size());
+    return 0;
+}
+
 /**
  * @brief 从多个可能的日志起始点中寻找最大的日志跳转序列号
  *
@@ -1131,7 +1219,7 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
         }
     }
 
-    dout(10) << __func__ << " max_jump_seq " << max_jump_seq << " at offset 0x" << std::hex << max_jump_offset << std::dec << dendl;
+    LOG(CEPH_INFO, "found max jump_seq %lu at offset 0x%lx", max_jump_seq, max_jump_offset);
 
     return max_jump_offset;
 }
