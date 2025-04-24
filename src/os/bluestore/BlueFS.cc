@@ -1124,7 +1124,7 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
             decode(uuid, p);
             decode(seq, p);
 
-            LOG(CEPH_INFO, "找到日志头: offset = %lu, seq = %lu, uuid = %s", disk_offset, seq, uuid.to_string().c_str());
+            LOG(CEPH_INFO, "找到日志头: disk_offset = %lu, seq = %lu, uuid = %s", disk_offset, seq, uuid.to_string().c_str());
 
             // 验证UUID
             if (uuid != super.uuid) {
@@ -1142,7 +1142,7 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
                 bufferlist more_bl;
                 r = bdev[BDEV_DB]->read(disk_offset + super.block_size, more, &more_bl, ioc[BDEV_DB], false);
                 if (r < 0) {
-                    LOG(CEPH_WARN, "读取pos:%lu 更多数据失败: %s", disk_offset + super.block_size, cpp_strerror(r));
+                    LOG(CEPH_WARN, "读取disk_offset:%lu 更多数据失败: %s", disk_offset + super.block_size, cpp_strerror(r));
                     continue;
                 }
                 bl.claim_append(more_bl);
@@ -1167,7 +1167,7 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
                             decode(jump_seq, op_p);
 
                             jump_seq_offset_map[jump_seq] = disk_offset + 4096;
-                            LOG(CEPH_INFO, "[OP_JUMP_SEQ 找到jump_seq = %lu, offset = %lu", jump_seq, disk_offset + 4096);
+                            LOG(CEPH_INFO, "[OP_JUMP_SEQ disk_offset:%lu 找到jump_seq = %lu, offset = %lu", disk_offset, jump_seq, disk_offset + 4096);
                         } else {
                             // 跳过其他操作类型的参数
                             switch (op) {
@@ -1207,7 +1207,7 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
                                     decode(next_seq, op_p);
                                     decode(offset, op_p);
 
-                                    LOG(CEPH_INFO, "[OP_JUMP] 找到jump_seq = %lu, offset = %lu", next_seq, offset);
+                                    LOG(CEPH_INFO, "[OP_JUMP] disk_offset: %lu 找到jump_seq = %lu, offset = %lu", disk_offset, next_seq, offset);
                                     jump_seq_offset_map[next_seq] = offset;
 
                                 } break;
