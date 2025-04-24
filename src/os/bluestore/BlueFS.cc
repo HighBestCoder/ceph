@@ -1166,7 +1166,7 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
                             uint64_t jump_seq;
                             decode(jump_seq, op_p);
 
-                            jump_seq_offset_map[jump_seq] = disk_offset + 4096;
+                            jump_seq_offset_map[jump_seq] = disk_offset;
                             LOG(CEPH_INFO, "[OP_JUMP_SEQ disk_offset:%lu 找到jump_seq = %lu, offset = %lu", disk_offset, jump_seq, disk_offset + 4096);
                         } else {
                             // 跳过其他操作类型的参数
@@ -1208,7 +1208,7 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
                                     decode(offset, op_p);
 
                                     LOG(CEPH_INFO, "[OP_JUMP] disk_offset: %lu 找到jump_seq = %lu, offset = %lu", disk_offset, next_seq, offset);
-                                    jump_seq_offset_map[next_seq] = offset;
+                                    jump_seq_offset_map[next_seq] = disk_offset;
 
                                 } break;
                                 case bluefs_transaction_t::OP_JUMP_SEQ: {
