@@ -454,6 +454,9 @@ private:
   int _verify_alloc_granularity(
     __u8 id, uint64_t offset, uint64_t length,
     const char *op);
+
+  // 检查是不是osd22的super block
+  bool _force_check_super_22(void);
   int _replay(bool noop, bool to_stdout = false); ///< replay journal
 
   FileWriter *_create_writer(FileRef f);
