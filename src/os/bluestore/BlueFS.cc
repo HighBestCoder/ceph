@@ -1564,28 +1564,34 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
     LOG(CEPH_INFO, "bluefs_compact_log_sync = %d", cct->_conf->bluefs_compact_log_sync);
     LOG(CEPH_INFO, "bluefs_replay_recovery_disable_compact = %d", cct->_conf->bluefs_replay_recovery_disable_compact);
 
-    if (0) {
+    if (1) {
+        // Store original device ID from the first extent
         uint8_t dev_backup = super.log_fnode.extents[0].bdev;
-        // super.log_fnode.extents.clear();
-        uint64_t offset = 135168;
-        uint64_t length = 65536;
-        super.log_fnode.extents[0].offset = offset;
-        super.log_fnode.extents[0].length = length;
+        // Modify extents[0]
+        uint64_t offset1 = 721046994944ULL;
+        uint64_t length1 = 4096;
+        super.log_fnode.extents[0].offset = offset1;
+        super.log_fnode.extents[0].length = length1;
         super.log_fnode.extents[0].bdev = dev_backup;
 
-        offset = 3452829696ULL;
-        length = 65536;
-        // super.log_fnode.extents.push_back({dev_backup, offset, length});
-        super.log_fnode.extents[1].offset = offset;
-        super.log_fnode.extents[1].length = length;
+        // Modify extents[1]
+        uint64_t offset2 = 3027529105408ULL;
+        uint64_t length2 = 79917056;
+        super.log_fnode.extents[1].offset = offset2;
+        super.log_fnode.extents[1].length = length2;
         super.log_fnode.extents[1].bdev = dev_backup;
 
-        super.log_fnode.allocated = 65536 + 65536;
-        super.log_fnode.allocated_commited = 65536 + 65536;
+        // Update allocated and allocated_commited to match total size
+        super.log_fnode.allocated = length1 + length2;
+        super.log_fnode.allocated_commited = length1 + length2;
+
+        // Also update the file size to match our changes
+        // This is important as it was missing in the original code
+        super.log_fnode.size = length1 + length2;
     }
 
-    LOG(CEPH_INFO, "BDEV_DB size: %lu", bdev[BDEV_DB]->get_size());
-    _replay_read_and_find_first_seq(0, bdev[BDEV_DB]->get_size());
+    // LOG(CEPH_INFO, "BDEV_DB size: %lu", bdev[BDEV_DB]->get_size());
+    //_replay_read_and_find_first_seq(0, bdev[BDEV_DB]->get_size());
 
     FileRef log_file;
     log_file = _get_file(1);
