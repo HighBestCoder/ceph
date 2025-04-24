@@ -1,5 +1,19 @@
 #include "BlueFS.h"
 
+#include <bits/stdc++.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <vector>
+
 #include "Allocator.h"
 #include "bluestore_common.h"
 #include "boost/algorithm/string.hpp"
@@ -987,6 +1001,409 @@ int BlueFS::_verify_alloc_granularity(__u8 id, uint64_t offset, uint64_t length,
 /// BEGIN
 ///////////////////////////////////////////////////////////////////////////////
 
+constexpr size_t READ_BLOCK_SIZE = 4 * 1024 * 1024;
+constexpr size_t PROCESS_BLOCK_SIZE = 4 * 1024;
+
+std::string parse_uuid_to_bytes(const std::string& uuid_str) {
+    std::string hex;
+    hex.reserve(32);
+    for (char c : uuid_str) {
+        if (c != '-') {
+            if (!std::isxdigit(static_cast<unsigned char>(c))) {
+                throw std::invalid_argument("Invalid character in UUID");
+            }
+            hex += c;
+        }
+    }
+    if (hex.size() != 32) {
+        throw std::invalid_argument("UUID must have exactly 32 hex digits after removing dashes");
+    }
+    std::string result;
+    result.reserve(16);
+    for (size_t i = 0; i < hex.size(); i += 2) {
+        std::string byte_str = hex.substr(i, 2);
+        char byte = static_cast<char>(std::stoi(byte_str, nullptr, 16));
+        result.push_back(byte);
+    }
+    return result;
+}
+
+const void* fast_memmem(const void* haystack, size_t haystacklen, const void* needle, size_t needlelen) {
+    // 检查是否足够大以包含偏移+目标长度
+    if (needlelen == 0 || haystacklen < 6 + needlelen) {
+        return nullptr;
+    }
+
+    const char* ptr = static_cast<const char*>(haystack);
+    if (memcmp(ptr + 6, needle, needlelen) == 0) {
+        return ptr + 6;  // 返回匹配位置的指针
+    }
+
+    return nullptr;
+}
+
+struct ReadRequest {
+    uint64_t offset;
+    uint64_t length;
+    bufferlist* buffer;
+};
+
+// 分析线程 发请求 -> 读取线程
+std::mutex read_mutex;
+std::condition_variable read_cond;
+std::queue<ReadRequest> read_queue;
+
+struct ReadResult {
+    uint64_t offset;
+    uint64_t length;
+    bufferlist* buffer;
+    int64_t bytes_read;
+};
+
+// 读取线程 发结果 -> 分析线程
+std::mutex result_mutex;
+std::condition_variable result_cond;
+std::queue<ReadResult> result_queue;
+
+// 读取线程函数
+void BlueFS::_thd_reader(void) {
+    while (true) {
+        ReadRequest req;
+        {
+            // LOG(CEPH_INFO, "开始等读磁盘消息");
+            std::unique_lock<std::mutex> lock(read_mutex);
+            read_cond.wait(lock, [] { return !read_queue.empty(); });
+            req = read_queue.front();
+            read_queue.pop();
+        }
+
+        // 得到退出的通知
+        if (req.buffer == nullptr) {
+            break;
+        }
+
+        req.buffer->clear();
+        int r = bdev[BDEV_DB]->read(req.offset, req.length, req.buffer, ioc[BDEV_DB], false);
+        if (r < 0) {
+            // LOG(CEPH_WARN, "读取 offset %lu 失败: %s", req.offset, cpp_strerror(r));
+            {
+                std::lock_guard<std::mutex> lock(result_mutex);
+                result_queue.push({req.offset, req.length, req.buffer, r});
+                result_cond.notify_one();
+            }
+            break;
+        }
+
+        // LOG(CEPH_INFO, "读取 offset %lu 成功, 读取长度: %lu bl_size:%lu", req.offset, (uint64_t)r, req.buffer->length());
+
+        ReadResult res{req.offset, req.length, req.buffer, req.buffer->length()};
+        {
+            std::lock_guard<std::mutex> lock(result_mutex);
+            result_queue.push(res);
+        }
+        result_cond.notify_one();
+    }
+
+    result_cond.notify_all();
+    LOG(CEPH_INFO, "read_thread 退出");
+}
+
+/// 这是从disk_offset读出来的4k buffer
+std::vector<JumpInfo> BlueFS::_decode_bluefs_wal_log(bufferlist& bl, uint64_t disk_offset) {
+    std::vector<JumpInfo> results;
+
+    uint64_t more = 0;
+    uint64_t seq;
+    uuid_d uuid;
+    try {
+        auto p = bl.cbegin();
+        __u8 a, b;
+        uint32_t len;
+        decode(a, p);
+        decode(b, p);
+        decode(len, p);
+        decode(uuid, p);
+        decode(seq, p);
+
+        // LOG(CEPH_INFO, "找到日志头: disk_offset = %lu, seq = %lu, uuid = %s", disk_offset, seq, uuid.to_string().c_str());
+
+        // 验证UUID
+        if (uuid != super.uuid) {
+            // LOG(CEPH_WARN, "发现 UUID 不匹配: %s != %s, 跳过", uuid.to_string().c_str(), super.uuid.to_string().c_str());
+            return results;
+        }
+
+        // 检查是否需要读取更多数据
+        if (len + 6 > bl.length()) {
+            more = round_up_to(len + 6 - bl.length(), super.block_size);
+        }
+
+        // 如果需要读取更多数据
+        if (more > 0) {
+            bufferlist more_bl;
+            int r = bdev[BDEV_DB]->read(disk_offset + super.block_size, more, &more_bl, ioc[BDEV_DB], false);
+            if (r < 0) {
+                LOG(CEPH_WARN, "读取disk_offset:%lu 更多数据失败: %s", disk_offset + super.block_size, cpp_strerror(r));
+                return results;
+            }
+            bl.claim_append(more_bl);
+        }
+
+        // 解码完整事务
+        bluefs_transaction_t t;
+        try {
+            p = bl.cbegin();
+            decode(t, p);
+
+            // 寻找事务中的跳转操作
+            if (t.op_bl.length() > 0) {
+                auto op_p = t.op_bl.cbegin();
+                while (!op_p.end()) {
+                    __u8 op;
+                    decode(op, op_p);
+
+                    if (op == bluefs_transaction_t::OP_JUMP_SEQ) {
+                        // 找到JUMP_SEQ操作，解析目标序列号
+                        uint64_t jump_seq;
+                        decode(jump_seq, op_p);
+
+                        // LOG(CEPH_INFO, "[OP_JUMP_SEQ] disk_offset: %lu seq: %lu jump_seq: %lu", disk_offset, seq, jump_seq);
+
+                        JumpInfo info;
+                        info.op = JumpInfo::JUMP_SEQ;
+                        info.disk_offset = disk_offset;
+                        info.seq = seq;
+                        info.jump_seq = jump_seq;
+                        info.offset = 0;  // 对JUMP_SEQ不适用
+                        results.push_back(info);
+                    } else if (op == bluefs_transaction_t::OP_JUMP) {
+                        uint64_t next_seq, offset;
+                        decode(next_seq, op_p);
+                        decode(offset, op_p);
+
+                        // LOG(CEPH_INFO, "[OP_JUMP] disk_offset: %lu seq: %lu jump_seq: %lu offset: %lu", disk_offset, seq, next_seq, offset);
+
+                        JumpInfo info;
+                        info.op = JumpInfo::JUMP;
+                        info.disk_offset = disk_offset;
+                        info.seq = seq;
+                        info.jump_seq = next_seq;
+                        info.offset = offset;
+
+                        results.push_back(info);
+                    } else {
+                        // 跳过其他操作类型的参数
+                        switch (op) {
+                            case bluefs_transaction_t::OP_INIT:
+                                break;
+                            case bluefs_transaction_t::OP_DIR_LINK: {
+                                string dir, file;
+                                uint64_t ino;
+                                decode(dir, op_p);
+                                decode(file, op_p);
+                                decode(ino, op_p);
+                            } break;
+                            case bluefs_transaction_t::OP_DIR_UNLINK: {
+                                string dir, file;
+                                decode(dir, op_p);
+                                decode(file, op_p);
+                            } break;
+                            case bluefs_transaction_t::OP_DIR_CREATE:
+                            case bluefs_transaction_t::OP_DIR_REMOVE: {
+                                string dir;
+                                decode(dir, op_p);
+                            } break;
+                            case bluefs_transaction_t::OP_FILE_UPDATE: {
+                                bluefs_fnode_t file;
+                                decode(file, op_p);
+                            } break;
+                            case bluefs_transaction_t::OP_FILE_UPDATE_INC: {
+                                bluefs_fnode_delta_t delta;
+                                decode(delta, op_p);
+                            } break;
+                            case bluefs_transaction_t::OP_FILE_REMOVE: {
+                                uint64_t ino;
+                                decode(ino, op_p);
+                            } break;
+                            default:
+                                op_p.seek(op_p.get_remaining());
+                                break;
+                        }
+                    }
+                }
+            }
+        } catch (buffer::error& e) {
+            LOG(CEPH_WARN, "解析事务失败: %s disk_offset:%lu", e.what(), disk_offset);
+        }
+    } catch (buffer::error& e) {
+        LOG(CEPH_WARN, "解析日志头失败: %s disk_offset", e.what(), disk_offset);
+    }
+
+    return results;
+}
+
+// 分析线程函数
+// 注意，这里的uuid 32 bytes，不是那种打印格式的。
+void BlueFS::_thd_analyzer(uint64_t disk_offset, uint64_t length, std::string uuid_bytes) {
+    uint64_t disk_end = disk_offset + length;
+
+    LOG(CEPH_INFO, "disk_offset:%lu length:%lu disk_end:%lu", disk_offset, length, disk_end);
+
+    // 这里先生成一些4K对齐的内存，每个都是READ_BLOCK_SIZE大小
+    std::vector<bufferlist*> buffers_list;
+    for (int i = 0; i < 4; i++) {
+        auto ptr = new bufferlist();
+        buffers_list.push_back(ptr);
+    }
+
+    auto push_read_request = [&](bool is_exit_reader) {
+        if (buffers_list.empty()) {
+            std::cerr << "No available buffers for read request\n";
+            return;
+        }
+
+        if (!is_exit_reader) {
+            if (disk_offset >= disk_end) {
+                std::cerr << "Disk offset out of range\n";
+                return;
+            }
+
+            if (disk_offset + READ_BLOCK_SIZE > disk_end) {
+                std::cerr << "Read request exceeds disk end\n";
+                return;
+            }
+        }
+
+        // 从buffers_list中取出一个buffer
+        auto* buffer = buffers_list.back();
+        if (is_exit_reader) {
+            buffer = nullptr;
+        } else {
+            buffers_list.pop_back();
+        }
+
+        ReadRequest req;
+        req.offset = disk_offset;
+        req.length = READ_BLOCK_SIZE;
+        req.buffer = buffer;
+
+        {
+            std::lock_guard<std::mutex> lock(read_mutex);
+            read_queue.push(req);
+        }
+        read_cond.notify_one();
+        disk_offset += READ_BLOCK_SIZE;
+    };
+
+    // LOG(CEPH_INFO, "[Send request] disk_offset: %lu", disk_offset);
+    push_read_request(false);
+
+    static auto start_time = std::chrono::steady_clock::now();
+    static uint64_t total_bytes_processed = 0;
+    int read_count = 1;
+
+    // 从disk_offset开始读取数据
+    while (disk_offset < disk_end) {
+        // 这里等待读取线程的结果
+        ReadResult res;
+        {
+            std::unique_lock<std::mutex> lock(result_mutex);
+            result_cond.wait(lock, [] { return !result_queue.empty(); });
+            res = result_queue.front();
+            result_queue.pop();
+        }
+
+        if (res.bytes_read < 0) {
+            std::cerr << "Error reading from disk: " << res.bytes_read << "\n";
+            break;
+        }
+
+        // LOG(CEPH_INFO, "[Send request] disk_offset: %lu", disk_offset);
+
+        // 在开始处理数据之前，先发起一个读取请求
+        push_read_request(false);
+        read_count++;
+
+        // 处理数据
+        size_t blocks = res.bytes_read / PROCESS_BLOCK_SIZE;
+        for (size_t i = 0; i < blocks; ++i) {
+            const char* data = res.buffer->c_str() + i * PROCESS_BLOCK_SIZE;
+            // 这里可以添加对数据的处理逻辑
+            // 例如，查找UUID、解析日志等
+            // LOG(CEPH_INFO, "处理数据块 %lu", res.offset + i * PROCESS_BLOCK_SIZE);
+            const void* found = fast_memmem(data, PROCESS_BLOCK_SIZE, uuid_bytes.c_str(), uuid_bytes.size());
+            if (found) {
+                // 这里取出[data, data + PROCESS_BLOCK_SIZE]的内容生成bufferlist
+                bufferlist bl;
+                bl.append(data, PROCESS_BLOCK_SIZE);
+                // 解析日志
+                auto jump_infos = _decode_bluefs_wal_log(bl, res.offset + i * PROCESS_BLOCK_SIZE);
+                for (const auto& jump_info : jump_infos) {
+                    if (jump_info.op == JumpInfo::JUMP || jump_info.op == JumpInfo::JUMP_SEQ) {
+                        LOG(CEPH_INFO, "[FIND] disk_offset: %lu seq: %lu jump_seq: %lu offset: %lu", jump_info.disk_offset, jump_info.seq, jump_info.jump_seq, jump_info.offset);
+                    }
+                }
+            }
+            // LOG(CEPH_INFO, "处理数据块 %lu 是否找到:%d", res.offset + i * PROCESS_BLOCK_SIZE, found != nullptr);
+        }
+
+        total_bytes_processed += READ_BLOCK_SIZE;
+        double percent = (double)total_bytes_processed / length * 100.0;
+
+        if (read_count % 1000 == 0) {
+            auto now = std::chrono::steady_clock::now();
+            std::chrono::duration<double> elapsed = now - start_time;
+            double elapsed_seconds = elapsed.count();
+
+            double speed = total_bytes_processed / elapsed_seconds;  // bytes/sec
+            double remaining_bytes = length - total_bytes_processed;
+            double eta = remaining_bytes / speed;
+
+            std::cerr << std::fixed << std::setprecision(2);
+            std::cerr << "[Progress] " << percent << "% done, elapsed: " << elapsed_seconds << "s, ETA: " << eta << "s\n";
+        }
+
+        // 处理完数据后，释放buffer
+        buffers_list.push_back(res.buffer);
+    }
+
+    push_read_request(true);
+    // 清理剩余的buffer
+    for (auto buffer : buffers_list) {
+        delete buffer;
+    }
+    read_cond.notify_all();
+    LOG(CEPH_INFO, "analysis disk 4K thread exit");
+}
+
+void BlueFS::_replay_read_and_find_first_seq(uint64_t start_offset, uint64_t end_offset) {
+    LOG(CEPH_INFO, "准备读%lu ~ %lu这个区间", start_offset, end_offset);
+    // 把super.uuid 转成uuid_bytes;
+    std::string uuid_bytes = parse_uuid_to_bytes(super.uuid.to_string());
+    if (start_offset > end_offset) {
+        std::swap(start_offset, end_offset);
+    }
+
+    uint64_t total_length = end_offset - start_offset;
+
+    LOG(CEPH_INFO, "start_offset:%lu end_offset:%lu total_length:%lu", start_offset, end_offset, total_length);
+
+    // 这里会启动两个线程
+    // 这里启动两个线程
+    // 启动两个线程
+    std::thread reader_thread(&BlueFS::_thd_reader, this);
+    std::thread analyzer_thread(&BlueFS::_thd_analyzer, this, start_offset, total_length, uuid_bytes);
+
+    // 等待线程结束
+    if (reader_thread.joinable()) {
+        reader_thread.join();
+    }
+
+    if (analyzer_thread.joinable()) {
+        analyzer_thread.join();
+    }
+}
+
 /// @brief 这个函数的功能，就是从指定的文件位置读取
 ///        log_seq与disk_offset的映射关系
 ///        然后把这个映射关系存放到log_seq_offset_map中
@@ -1110,126 +1527,20 @@ int BlueFS::_replay_find_log(std::vector<uint64_t>& offsets) {
             continue;
         }
 
-        // 解析日志头
-        uint64_t more = 0;
-        uint64_t seq;
-        uuid_d uuid;
-        try {
-            auto p = bl.cbegin();
-            __u8 a, b;
-            uint32_t len;
-            decode(a, p);
-            decode(b, p);
-            decode(len, p);
-            decode(uuid, p);
-            decode(seq, p);
-
-            LOG(CEPH_INFO, "找到日志头: disk_offset = %lu, seq = %lu, uuid = %s", disk_offset, seq, uuid.to_string().c_str());
-
-            // 验证UUID
-            if (uuid != super.uuid) {
-                LOG(CEPH_WARN, "发现 UUID 不匹配: %s != %s, 跳过", uuid.to_string().c_str(), super.uuid.to_string().c_str());
-                continue;
-            }
-
-            // 检查是否需要读取更多数据
-            if (len + 6 > bl.length()) {
-                more = round_up_to(len + 6 - bl.length(), super.block_size);
-            }
-
-            // 如果需要读取更多数据
-            if (more > 0) {
-                bufferlist more_bl;
-                r = bdev[BDEV_DB]->read(disk_offset + super.block_size, more, &more_bl, ioc[BDEV_DB], false);
-                if (r < 0) {
-                    LOG(CEPH_WARN, "读取disk_offset:%lu 更多数据失败: %s", disk_offset + super.block_size, cpp_strerror(r));
-                    continue;
+        auto res = _decode_bluefs_wal_log(bl, disk_offset);
+        // 打印res
+        for (auto& info : res) {
+            if (info.op == JumpInfo::JUMP_SEQ || info.op == JumpInfo::JUMP) {
+                // 这里我们只关心JUMP_SEQ操作
+                if (info.jump_seq > max_jump_seq) {
+                    max_jump_seq = info.jump_seq;
+                    max_jump_offset = info.disk_offset;
                 }
-                bl.claim_append(more_bl);
+                jump_seq_offset_map[info.jump_seq] = info.disk_offset;
+
+                // 打印info
+                LOG(CEPH_INFO, "[JUMP_SEQ] disk_offset: %lu seq: %lu jump_seq: %lu offset: %lu", info.disk_offset, info.seq, info.jump_seq, info.offset);
             }
-
-            // 解码完整事务
-            bluefs_transaction_t t;
-            try {
-                p = bl.cbegin();
-                decode(t, p);
-
-                // 寻找事务中的最后一个操作
-                if (t.op_bl.length() > 0) {
-                    auto op_p = t.op_bl.cbegin();
-                    while (!op_p.end()) {
-                        __u8 op;
-                        decode(op, op_p);
-
-                        if (op == bluefs_transaction_t::OP_JUMP_SEQ) {
-                            // 找到JUMP_SEQ操作，解析目标序列号
-                            uint64_t jump_seq;
-                            decode(jump_seq, op_p);
-
-                            jump_seq_offset_map[jump_seq] = disk_offset;
-                            LOG(CEPH_INFO, "[OP_JUMP_SEQ disk_offset:%lu 找到jump_seq = %lu, offset = %lu", disk_offset, jump_seq, disk_offset + 4096);
-                        } else {
-                            // 跳过其他操作类型的参数
-                            switch (op) {
-                                case bluefs_transaction_t::OP_INIT:
-                                    break;
-                                case bluefs_transaction_t::OP_DIR_LINK: {
-                                    string dir, file;
-                                    uint64_t ino;
-                                    decode(dir, op_p);
-                                    decode(file, op_p);
-                                    decode(ino, op_p);
-                                } break;
-                                case bluefs_transaction_t::OP_DIR_UNLINK: {
-                                    string dir, file;
-                                    decode(dir, op_p);
-                                    decode(file, op_p);
-                                } break;
-                                case bluefs_transaction_t::OP_DIR_CREATE:
-                                case bluefs_transaction_t::OP_DIR_REMOVE: {
-                                    string dir;
-                                    decode(dir, op_p);
-                                } break;
-                                case bluefs_transaction_t::OP_FILE_UPDATE: {
-                                    bluefs_fnode_t file;
-                                    decode(file, op_p);
-                                } break;
-                                case bluefs_transaction_t::OP_FILE_UPDATE_INC: {
-                                    bluefs_fnode_delta_t delta;
-                                    decode(delta, op_p);
-                                } break;
-                                case bluefs_transaction_t::OP_FILE_REMOVE: {
-                                    uint64_t ino;
-                                    decode(ino, op_p);
-                                } break;
-                                case bluefs_transaction_t::OP_JUMP: {
-                                    uint64_t next_seq, offset;
-                                    decode(next_seq, op_p);
-                                    decode(offset, op_p);
-
-                                    LOG(CEPH_INFO, "[OP_JUMP] disk_offset: %lu 找到jump_seq = %lu, offset = %lu", disk_offset, next_seq, offset);
-                                    jump_seq_offset_map[next_seq] = disk_offset;
-
-                                } break;
-                                case bluefs_transaction_t::OP_JUMP_SEQ: {
-                                    uint64_t next_seq;
-                                    decode(next_seq, op_p);
-                                } break;
-                                default:
-                                    dout(10) << __func__ << " unknown op " << (int)op << dendl;
-                                    op_p.seek(op_p.get_remaining());
-                                    break;
-                            }
-                        }
-                    }
-                }
-            } catch (buffer::error& e) {
-                LOG(CEPH_WARN, "解析事务失败: %s", e.what());
-                continue;
-            }
-        } catch (buffer::error& e) {
-            LOG(CEPH_WARN, "解析日志头失败: %s", e.what());
-            continue;
         }
     }
 
@@ -1273,11 +1584,8 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
         super.log_fnode.allocated_commited = 65536 + 65536;
     }
 
-    // 在一开始的时候，就去尝试_replay_load_seq_offset_map
-    _replay_load_seq_offset_map();
-
-    // 尝试找到最新的log_seq=1的那个offset
-    _replay_find_log(_replay_seq_offset_map[1]);
+    LOG(CEPH_INFO, "BDEV_DB size: %lu", bdev[BDEV_DB]->get_size());
+    _replay_read_and_find_first_seq(0, bdev[BDEV_DB]->get_size());
 
     FileRef log_file;
     log_file = _get_file(1);
@@ -2201,10 +2509,10 @@ int64_t BlueFS::_read(FileReader* h,      ///< [in] read from here
                 // it makes it in sync with logic in _flush_range()
                 bool use_buffered_io = h->file->fnode.ino == 1 ? false : cct->_conf->bluefs_buffered_io;
                 if (!cct->_conf->bluefs_check_for_zeros) {
-                    LOG(CEPH_INFO, "[1] disk read: offset = %lu, length = %lu, bdev = %d", p->offset + x_off, l, p->bdev);
+                    // LOG(CEPH_INFO, "[1] disk read: offset = %lu, length = %lu, bdev = %d", p->offset + x_off, l, p->bdev);
                     r = bdev[p->bdev]->read(p->offset + x_off, l, &buf->bl, ioc[p->bdev], use_buffered_io);
                 } else {
-                    LOG(CEPH_INFO, "[2] disk read: offset = %lu, length = %lu, bdev = %d", p->offset + x_off, l, p->bdev);
+                    // LOG(CEPH_INFO, "[2] disk read: offset = %lu, length = %lu, bdev = %d", p->offset + x_off, l, p->bdev);
                     r = read(p->bdev, p->offset + x_off, l, &buf->bl, ioc[p->bdev], use_buffered_io);
                 }
                 ceph_assert(r == 0);

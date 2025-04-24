@@ -89,6 +89,19 @@ struct bluefs_shared_alloc_context_t {
     void reset() { a = nullptr; }
 };
 
+// 定义跳转信息结构体，用于记录OP_JUMP和OP_JUMP_SEQ操作
+struct JumpInfo {
+    enum JumpType {
+        JUMP,     // 对应OP_JUMP操作
+        JUMP_SEQ  // 对应OP_JUMP_SEQ操作
+    };
+    JumpType op;
+    uint64_t disk_offset;  // 该日志条目的磁盘偏移量
+    uint64_t seq;          // 当前日志序列号
+    uint64_t jump_seq;     // 跳转目标的序列号
+    uint64_t offset;       // 跳转目标的偏移量(仅OP_JUMP有效)
+};
+
 class BlueFS {
    public:
     CephContext* cct;
@@ -395,6 +408,10 @@ class BlueFS {
     /// @brief 这个是真正replay成功的log_seq与offset映射关系
     std::unordered_map<uint64_t, std::vector<uint64_t>> _replay_seq_offset_map_ok;
 
+    std::vector<JumpInfo> _decode_bluefs_wal_log(bufferlist& bl, uint64_t disk_offset);
+    void _thd_reader(void);
+    void _thd_analyzer(uint64_t disk_offset, uint64_t length, std::string uuid_bytes);
+    void _replay_read_and_find_first_seq(uint64_t start_offset, uint64_t end_offset);
     int _replay_load_seq_offset_map(void);
     int _replay_find_log(std::vector<uint64_t>& first_log_offset);
     int _replay(bool noop, bool to_stdout = false);  ///< replay journal
