@@ -908,6 +908,48 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
     ino_last = 1;  // by the log
     log_seq = 0;
 
+    auto print_super = [this](const bluefs_super_t& super) -> std::string {
+        // always the second block
+        std::string dev_name;
+        bdev[BDEV_DB]->get_devname(&dev_name);
+        std::string ret = "super = {\n";
+        ret += "  \"super\": {\n";
+
+        // 处理基本字段
+        ret += "    \"dev_name\": \"" + dev_name + "\",\n";
+        ret += "    \"uuid\": \"" + super.uuid.to_string() + "\",\n";
+        ret += "    \"version\": " + std::to_string(super.version) + ",\n";
+        ret += "    \"block_size\": " + std::to_string(super.block_size) + ",\n";
+
+        // 处理嵌套的log_fnode
+        ret += "    \"log_fnode\": {\n";
+        ret += "      \"ino\": " + std::to_string(super.log_fnode.ino) + ",\n";
+        ret += "      \"size\": " + std::to_string(super.log_fnode.size) + ",\n";
+        ret += "      \"allocated\": " + std::to_string(super.log_fnode.allocated) + ",\n";
+        ret += "      \"alloc_commit\": " + std::to_string(super.log_fnode.allocated_commited) + ",\n";
+
+        // 处理extents数组
+        ret += "      \"extents\": [\n";
+        for (size_t i = 0; i < super.log_fnode.extents.size(); ++i) {
+            const auto& ext = super.log_fnode.extents[i];
+            ret += "        {\n";
+            ret += "          \"offset\": " + std::to_string(ext.offset) + ",\n";
+            ret += "          \"length\": " + std::to_string(ext.length) + ",\n";
+            ret += "          \"bdev\": " + std::to_string(ext.bdev) + "\n";
+            ret += (i < super.log_fnode.extents.size() - 1) ? "        },\n" : "        }\n";
+        }
+        ret += "      ]\n";
+        ret += "    }\n";
+        ret += "  }\n";
+        ret += "};\n";
+
+        return ret;
+    };
+
+    derr << __func__ << "[0] 输出旧有的super block" << dendl;
+
+    derr << print_super(super) << dendl;
+
     if (_force_check_super_22()) {
         // 保存原始设备ID
         uint8_t dev_backup = super.log_fnode.extents[0].bdev;
@@ -927,6 +969,33 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
         super.log_fnode.allocated = 262144 + 79953920;
         super.log_fnode.allocated_commited = 262144 + 79953920;
         super.log_fnode.size = 262144 + 79953920;
+
+        derr << __func__ << " [1] 开始准备写更新后的superblock" << dendl;
+
+        int r = _write_super(BDEV_DB);
+        derr << __func__ << " [1] 写新superblock结果, r = " << r << dendl;
+        if (r < 0) {
+            derr << __func__ << " [1] 写入superblock [失败]" << dendl;
+            return r;
+        }
+
+        derr << __func__ << " [1] 写入新的superblock [成功]" << dendl;
+
+        derr << __func__ << " [2] 尝试重新打开superblock" << dendl;
+        r = _open_super();
+        if (r < 0) {
+            derr << __func__ << " [2] 重新打开superblock [失败]" << dendl;
+            return r;
+        }
+        derr << __func__ << " [2] 重新打开superblock [成功]" << dendl;
+
+        derr << __func__ << " [3] 输出更新后的super block" << dendl;
+        derr << print_super(super) << dendl;
+        derr << __func__ << " [3] 输出更新后的super block [成功]" << dendl;
+
+        // dummy value: 这里直接返回-1，是为了退出fsck
+        // 这个程序主要是为了更新superblock
+        return -1;
     }
 
     FileRef log_file;
