@@ -84,6 +84,7 @@ pair<uint64_t /*disk_offset_header*/, vector<std::pair<uint64_t /*disk_offset*/,
         std::cout << "not found break point" << std::endl;
         return ans;
     } else {
+        break_point--;
         std::cout << "break_point: " << break_point << std::endl;
     }
 
