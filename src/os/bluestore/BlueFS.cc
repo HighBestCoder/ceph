@@ -1090,6 +1090,9 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
             }
             break;
         }
+
+        derr << __func__ << " 0x" << std::hex << pos << std::dec << ": seq " << seq << " -> log_seq" << log_seq << dendl;
+
         if (more) {
             dout(20) << __func__ << " need 0x" << std::hex << more << std::dec << " more bytes" << dendl;
             bufferlist t;
