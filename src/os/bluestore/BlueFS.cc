@@ -980,6 +980,9 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
     }
 
     if (_force_check_super_4()) {
+        //  _replay invalid op_file_update_inc, new extents miss end of file fnode=file(ino 1 size 0x341000 mtime 0.000000 allocated 12d0000 alloc_commit 12d0000 extents
+        //  [1:0xbe50a20000~40000,1:0x2df8d010000~1290000]) delta=delta(ino 1 size 0x341000 mtime 0.000000 offset 440000 extents [1:0x2df8d410000~400000])
+        //  FAILED ceph_assert(delta.offset == fnode.allocated)
         // 保存原始设备ID
         uint8_t dev_backup = super.log_fnode.extents[0].bdev;
         // 设置第一个扩展区 - 包含初始日志和OP_JUMP操作
@@ -990,12 +993,12 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
         // 设置第二个扩展区 - 跳转目标位置
         // 注意：这里使用原始的第二个扩展区偏移量，而不是OP_JUMP中的offset
         super.log_fnode.extents[1].offset = 0x2df8d010000;
-        super.log_fnode.extents[1].length = 0x1410000;
+        super.log_fnode.extents[1].length = 0x400000;
         super.log_fnode.extents[1].bdev = dev_backup;
 
         // 更新总分配大小
-        super.log_fnode.allocated = 0x1450000;
-        super.log_fnode.allocated_commited = 0x1450000;
+        super.log_fnode.allocated = 0x440000;
+        super.log_fnode.allocated_commited = 0x440000;
         super.log_fnode.size = 0x341000;
     }
 
