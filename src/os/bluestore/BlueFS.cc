@@ -983,20 +983,20 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
         // 保存原始设备ID
         uint8_t dev_backup = super.log_fnode.extents[0].bdev;
         // 设置第一个扩展区 - 包含初始日志和OP_JUMP操作
-        super.log_fnode.extents[0].offset = 817396580352;
-        super.log_fnode.extents[0].length = 262144;
+        super.log_fnode.extents[0].offset = 0xbe50a20000;
+        super.log_fnode.extents[0].length = 0x40000;
         super.log_fnode.extents[0].bdev = dev_backup;
 
         // 设置第二个扩展区 - 跳转目标位置
         // 注意：这里使用原始的第二个扩展区偏移量，而不是OP_JUMP中的offset
-        super.log_fnode.extents[1].offset = 3159166615552;
-        super.log_fnode.extents[1].length = 21037056;
+        super.log_fnode.extents[1].offset = 0x2df8d010000;
+        super.log_fnode.extents[1].length = 0x1410000;
         super.log_fnode.extents[1].bdev = dev_backup;
 
         // 更新总分配大小
-        super.log_fnode.allocated = 262144 + 21037056;
-        super.log_fnode.allocated_commited = 262144 + 21037056;
-        super.log_fnode.size = 262144 + 19402752;
+        super.log_fnode.allocated = 0x1450000;
+        super.log_fnode.allocated_commited = 0x1450000;
+        super.log_fnode.size = 0x341000;
     }
 
     FileRef log_file;
