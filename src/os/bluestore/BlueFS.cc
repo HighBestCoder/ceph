@@ -996,7 +996,7 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
         // 更新总分配大小
         super.log_fnode.allocated = 262144 + 19464192;
         super.log_fnode.allocated_commited = 262144 + 19464192;
-        super.log_fnode.size = 262144 + 19402752;
+        super.log_fnode.size = 262144 + 19464192;
     }
 
     FileRef log_file;
