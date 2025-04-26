@@ -990,12 +990,12 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
         // 设置第二个扩展区 - 跳转目标位置
         // 注意：这里使用原始的第二个扩展区偏移量，而不是OP_JUMP中的offset
         super.log_fnode.extents[1].offset = 3159166615552;
-        super.log_fnode.extents[1].length = 19402752;
+        super.log_fnode.extents[1].length = 19464192;
         super.log_fnode.extents[1].bdev = dev_backup;
 
         // 更新总分配大小
-        super.log_fnode.allocated = 262144 + 19402752;
-        super.log_fnode.allocated_commited = 262144 + 19402752;
+        super.log_fnode.allocated = 262144 + 19464192;
+        super.log_fnode.allocated_commited = 262144 + 19464192;
         super.log_fnode.size = 262144 + 19402752;
     }
 
