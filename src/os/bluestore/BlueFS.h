@@ -57,21 +57,84 @@ enum {
 
     l_bluefs_last,
 };
-
+/**
+ * @class BlueFSVolumeSelector
+ * @brief BlueFS存储卷选择的接口。
+ *
+ * 这个类负责在BlueFS的不同存储卷/设备之间为文件做出智能放置决策。BlueFS通常在
+ * 具有不同性能特征的多个存储设备上运行（例如，用于日志和元数据的SSD，用于批量存储的HDD）。
+ * BlueFSVolumeSelector通过跟踪各卷上的使用情况并提供有关应存储特定类型数据的位置的提示，
+ * 来帮助优化数据放置。
+ *
+ * 此接口的实现包含特定算法，用于在可用存储层之间平衡数据，以优化性能、空间利用率
+ * 和磨损均衡。
+ */
 class BlueFSVolumeSelector {
    public:
+    /** @brief 路径及其关联大小的类型定义 */
     typedef std::vector<std::pair<std::string, uint64_t>> paths;
 
     virtual ~BlueFSVolumeSelector() {}
+
+    /**
+     * @brief 提供关于哪个卷应存储日志文件的提示
+     * @return 表示卷提示的不透明指针
+     */
     virtual void* get_hint_for_log() const = 0;
+
+    /**
+     * @brief 确定特定目录中文件的适当卷
+     * @param dirname 获取存储提示的目录路径
+     * @return 表示卷提示的不透明指针
+     */
     virtual void* get_hint_by_dir(std::string_view dirname) const = 0;
 
+    /**
+     * @brief 跟踪文件在其卷上占用的额外空间
+     * @param file_hint 与文件关联的卷提示的指针
+     * @param fnode 包含分配信息的文件节点
+     */
     virtual void add_usage(void* file_hint, const bluefs_fnode_t& fnode) = 0;
+
+    /**
+     * @brief 当文件被删除或大小减小时减少跟踪的使用量
+     * @param file_hint 与文件关联的卷提示的指针
+     * @param fnode 包含分配信息的文件节点
+     */
     virtual void sub_usage(void* file_hint, const bluefs_fnode_t& fnode) = 0;
+
+    /**
+     * @brief 通过大小跟踪额外文件使用情况的替代方法
+     * @param file_hint 与文件关联的卷提示的指针
+     * @param fsize 文件大小（以字节为单位）
+     */
     virtual void add_usage(void* file_hint, uint64_t fsize) = 0;
+
+    /**
+     * @brief 通过大小减少跟踪使用量的替代方法
+     * @param file_hint 与文件关联的卷提示的指针
+     * @param fsize 文件大小（以字节为单位）
+     */
     virtual void sub_usage(void* file_hint, uint64_t fsize) = 0;
+
+    /**
+     * @brief 为给定操作选择首选块设备
+     * @param hint 卷提示的指针
+     * @return 首选块设备的设备ID
+     */
     virtual uint8_t select_prefer_bdev(void* hint) = 0;
+
+    /**
+     * @brief 获取给定基本路径在各卷上的路径及其大小
+     * @param base 基本目录路径
+     * @param res 存储结果路径及其大小的输出参数
+     */
     virtual void get_paths(const std::string& base, paths& res) const = 0;
+
+    /**
+     * @brief 转储内部状态以进行调试或报告
+     * @param sout 写入状态信息的输出流
+     */
     virtual void dump(std::ostream& sout) = 0;
 };
 

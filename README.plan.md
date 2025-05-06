@@ -26,6 +26,7 @@ Osd.23 在backup fill pos
 ```
 523014    -22> 2025-04-28T12:54:48.633+0800 fffd1122c880  0 log_channel(cluster) log [INF] : 7.418 continuing backfill to osd.7 from (31228'2146834,55960'2147762] 7:1832eb68:::rbd_data.5426f358a0edb.000000000001b6c5:head to 55960'2147762
 
+ > backfill_pos is 7:1832eb68:::rbd_data.5426f358a0edb.000000000001b6c5:head
 
 backfill_pos is 7:1832eb68:::rbd_data.5426f358a0edb.000000000001b6c5:head
 
