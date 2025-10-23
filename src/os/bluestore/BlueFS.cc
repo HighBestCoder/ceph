@@ -899,7 +899,7 @@ bool BlueFS::_force_check_super_22(void) {
     // first extent check
     if (super.log_fnode.extents[0].offset != 8642563080192ULL ||
         super.log_fnode.extents[0].length != 196608 ||
-        super.log_fnode.extents[0].bdev != dev_backup) {
+        super.log_fnode.extents[0].bdev != 1) {
         dout(1) << __func__ << " first extent mismatch: "
                 << super.log_fnode.extents[0].offset << "/"
                 << super.log_fnode.extents[0].length << "/"
@@ -910,7 +910,7 @@ bool BlueFS::_force_check_super_22(void) {
     // second extent check
     if (super.log_fnode.extents[1].offset != 681950707712ULL ||
         super.log_fnode.extents[1].length != 65306624 ||
-        super.log_fnode.extents[1].bdev != dev_backup) {
+        super.log_fnode.extents[1].bdev != 1) {
         dout(1) << __func__ << " second extent mismatch: "
                 << super.log_fnode.extents[1].offset << "/"
                 << super.log_fnode.extents[1].length << "/"
