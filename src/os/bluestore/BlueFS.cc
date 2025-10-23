@@ -626,30 +626,47 @@ int BlueFS::read_random(uint8_t ndev, uint64_t off, uint64_t len, char* buf, boo
 }
 
 int BlueFS::mount() {
+    printf("========================================\n");
+    printf("[TRACE] BlueFS::mount() ENTER\n");
+    printf("========================================\n");
     dout(1) << __func__ << dendl;
 
+    printf("[TRACE] Step 1: Calling _open_super()...\n");
     int r = _open_super();
     if (r < 0) {
+        derr << "[TRACE] _open_super() FAILED with r=" << r << " (" << cpp_strerror(r) << ")" << dendl;
         derr << __func__ << " failed to open super: " << cpp_strerror(r) << dendl;
         goto out;
     }
+    derr << "[TRACE] _open_super() SUCCESS" << dendl;
 
     // set volume selector if not provided before/outside
     if (vselector == nullptr) {
+        derr << "[TRACE] Step 2: Creating volume selector..." << dendl;
         vselector.reset(
             new OriginalVolumeSelector(get_block_device_size(BlueFS::BDEV_WAL) * 95 / 100, get_block_device_size(BlueFS::BDEV_DB) * 95 / 100, get_block_device_size(BlueFS::BDEV_SLOW) * 95 / 100));
+        derr << "[TRACE] Volume selector created" << dendl;
     }
 
+    derr << "[TRACE] Step 3: Calling _init_alloc()..." << dendl;
     _init_alloc();
+    derr << "[TRACE] _init_alloc() done" << dendl;
+    
+    derr << "[TRACE] Step 4: Calling _init_logger()..." << dendl;
     _init_logger();
+    derr << "[TRACE] _init_logger() done" << dendl;
 
+    derr << "[TRACE] Step 5: Calling _replay(false, false)..." << dendl;
     r = _replay(false, false);
     if (r < 0) {
+        derr << "[TRACE] _replay() FAILED with r=" << r << " (" << cpp_strerror(r) << ")" << dendl;
         derr << __func__ << " failed to replay log: " << cpp_strerror(r) << dendl;
         _stop_alloc();
         goto out;
     }
+    derr << "[TRACE] _replay() SUCCESS" << dendl;
 
+    derr << "[TRACE] Step 6: Initializing freelist..." << dendl;
     // init freelist
     for (auto& p : file_map) {
         dout(30) << __func__ << " noting alloc for " << p.second->fnode << dendl;
@@ -670,7 +687,9 @@ int BlueFS::mount() {
     } else {
         dout(1) << __func__ << " shared bdev not used" << dendl;
     }
+    derr << "[TRACE] Freelist initialized" << dendl;
 
+    derr << "[TRACE] Step 7: Setting up log writer..." << dendl;
     // set up the log for future writes
     log_writer = _create_writer(_get_file(1));
     ceph_assert(log_writer->file->fnode.ino == 1);
@@ -678,9 +697,13 @@ int BlueFS::mount() {
     log_writer->file->fnode.reset_delta();
     dout(10) << __func__ << " log write pos set to 0x" << std::hex << log_writer->pos << std::dec << dendl;
 
+    derr << "[TRACE] BlueFS::mount() SUCCESS - returning 0" << dendl;
+    derr << "========================================" << dendl;
     return 0;
 
 out:
+    derr << "[TRACE] BlueFS::mount() FAILED - goto out, returning r=" << r << dendl;
+    derr << "========================================" << dendl;
     super = bluefs_super_t();
     return r;
 }

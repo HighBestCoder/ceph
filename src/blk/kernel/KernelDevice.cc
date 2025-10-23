@@ -12,6 +12,8 @@
  *
  */
 
+#include <iostream>
+#include <sstream>
 #include <limits>
 #include <unistd.h>
 #include <stdlib.h>
@@ -32,6 +34,7 @@
 #endif
 #include "common/debug.h"
 #include "common/numa.h"
+#include "common/BackTrace.h"
 
 #include "global/global_context.h"
 #include "io_uring.h"
@@ -124,6 +127,21 @@ int KernelDevice::open(const string& p)
 {
   path = p;
   int r = 0, i = 0;
+  
+  derr << "========================================" << dendl;
+  derr << "[TRACE] KernelDevice::open() ENTER" << dendl;
+  derr << "[TRACE] path: " << path << dendl;
+  derr << "========================================" << dendl;
+  derr << "[TRACE] Call Stack:" << dendl;
+  
+  // Print call stack
+  ceph::BackTrace bt(1);
+  std::ostringstream oss;
+  bt.print(oss);
+  derr << oss.str() << dendl;
+  
+  derr << "========================================" << dendl;
+  
   dout(1) << __func__ << " path " << path << dendl;
 
   for (i = 0; i < WRITE_LIFE_MAX; i++) {
@@ -224,13 +242,17 @@ int KernelDevice::open(const string& p)
     }
 
     char partition[PATH_MAX], devname[PATH_MAX];
+    memset(partition, 0, sizeof(partition));
+    memset(devname, 0, sizeof(devname));
     if ((r = blkdev_buffered.partition(partition, PATH_MAX)) ||
 	(r = blkdev_buffered.wholedisk(devname, PATH_MAX))) {
-      derr << "[JIYOU] unable to get device name for " << path << ": "
-	<< cpp_strerror(r) << dendl;
+      derr << "devname = " << devname << dendl;
+      derr << "partition = " << partition << dendl;
+      derr << "[JIYOU] unable to get device name for " << path << dendl;
       rotational = true;
+      derr << __func__ << " assuming rotational" << dendl;
     } else {
-      dout(20) << __func__ << " devname " << devname << dendl;
+      derr << __func__ << " devname " << devname << dendl;
       rotational = blkdev_buffered.is_rotational();
       support_discard = blkdev_buffered.support_discard();
       this->devname = devname;
@@ -239,6 +261,7 @@ int KernelDevice::open(const string& p)
   }
 
   r = _aio_start();
+  derr << "r = " << r << dendl;
   if (r < 0) {
     goto out_fail;
   }
@@ -247,7 +270,7 @@ int KernelDevice::open(const string& p)
   // round size down to an even block
   size &= ~(block_size - 1);
 
-  dout(1) << __func__
+  derr << __func__
 	  << " size " << size
 	  << " (0x" << std::hex << size << std::dec << ", "
 	  << byte_u_t(size) << ")"
