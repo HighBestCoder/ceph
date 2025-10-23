@@ -15,6 +15,7 @@ namespace fs = std::experimental::filesystem;
 #endif
 #include <iostream>
 #include <fstream>
+#include <iomanip>
 #include <time.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -315,6 +316,84 @@ static void bluefs_rm(
   return;
 }
 
+static void bluefs_ls(
+  CephContext *cct,
+  const string& path,
+  const vector<string>& devs)
+{
+  BlueStore bluestore(cct, path);
+  KeyValueDB *db_ptr;
+  int r = bluestore.open_db_environment(&db_ptr, false);
+  if (r < 0) {
+    cerr << "error preparing db environment: " << cpp_strerror(r) << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  BlueFS* bs = bluestore.get_bluefs();
+
+  cout << "Listing BlueFS files:" << std::endl;
+  cout << std::string(80, '=') << std::endl;
+  
+  // List all directories and their files
+  vector<string> dirs;
+  
+  // Get root directory listing
+  r = bs->readdir("", &dirs);
+  if (r < 0) {
+    cerr << "failed to read root directory: " << cpp_strerror(r) << std::endl;
+    bluestore.close_db_environment();
+    exit(EXIT_FAILURE);
+  }
+  
+  // Add root directory itself
+  dirs.insert(dirs.begin(), "");
+  
+  uint64_t total_files = 0;
+  uint64_t total_size = 0;
+  
+  for (const auto& dirname : dirs) {
+    vector<string> files;
+    r = bs->readdir(dirname, &files);
+    if (r < 0) {
+      cerr << "failed to read directory '" << dirname << "': " << cpp_strerror(r) << std::endl;
+      continue;
+    }
+    
+    if (files.empty() && dirname.empty()) {
+      continue;
+    }
+    
+    cout << "\nDirectory: " << (dirname.empty() ? "/" : dirname) << std::endl;
+    cout << std::string(80, '-') << std::endl;
+    
+    for (const auto& filename : files) {
+      BlueFS::FileReader* file_reader = nullptr;
+      r = bs->open_for_read(dirname, filename, &file_reader, false);
+      
+      uint64_t file_size = 0;
+      if (r >= 0 && file_reader && file_reader->file) {
+        file_size = file_reader->file->fnode.size;
+        delete file_reader;
+      }
+      
+      total_files++;
+      total_size += file_size;
+      
+      // Format output
+      cout << "  " << std::left << std::setw(50) << filename 
+           << " " << std::right << std::setw(15) << file_size 
+           << " bytes" << std::endl;
+    }
+  }
+  
+  cout << std::string(80, '=') << std::endl;
+  cout << "Total: " << total_files << " files, " 
+       << total_size << " bytes (" 
+       << (total_size / 1024.0 / 1024.0) << " MB)" << std::endl;
+  
+  bluestore.close_db_environment();
+  return;
+}
+
 int main(int argc, char **argv)
 {
   string out_dir;
@@ -363,6 +442,7 @@ int main(int argc, char **argv)
         "bluefs-export, "
         "bluefs-import, "
         "bluefs-rm, "
+        "bluefs-ls, "
         "bluefs-bdev-sizes, "
         "bluefs-bdev-expand, "
         "bluefs-bdev-new-db, "
@@ -452,6 +532,7 @@ int main(int argc, char **argv)
   if (action == "bluefs-export" || 
       action == "bluefs-import" ||
       action == "bluefs-rm" ||
+      action == "bluefs-ls" ||
       action == "bluefs-log-dump") {
     if (path.empty()) {
       cerr << "must specify bluestore path" << std::endl;
@@ -721,6 +802,9 @@ int main(int argc, char **argv)
   }
   else if (action == "bluefs-rm") {
     bluefs_rm(target_file, cct.get(), path, devs);
+  }
+  else if (action == "bluefs-ls") {
+    bluefs_ls(cct.get(), path, devs);
   }
   else if (action == "bluefs-export") {
     BlueFS *fs = open_bluefs_readonly(cct.get(), path, devs);
