@@ -275,6 +275,46 @@ static void bluefs_import(
   return;
 }
 
+static void bluefs_rm(
+  const string& target_file,
+  CephContext *cct,
+  const string& path,
+  const vector<string>& devs)
+{
+  BlueStore bluestore(cct, path);
+  KeyValueDB *db_ptr;
+  int r = bluestore.open_db_environment(&db_ptr, false);
+  if (r < 0) {
+    cerr << "error preparing db environment: " << cpp_strerror(r) << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  BlueFS* bs = bluestore.get_bluefs();
+
+  // Parse target file path
+  fs::path file_path(target_file);
+  const string dir = file_path.parent_path();
+  const string file_name = file_path.filename();
+  
+  cout << "Removing BlueFS file: " << target_file << std::endl;
+  cout << "  Directory: " << dir << std::endl;
+  cout << "  Filename: " << file_name << std::endl;
+  
+  // Delete the file
+  r = bs->unlink(dir, file_name);
+  if (r < 0) {
+    cerr << "failed to unlink " << target_file << ": " << cpp_strerror(r) << std::endl;
+    bluestore.close_db_environment();
+    exit(EXIT_FAILURE);
+  }
+  
+  // Sync metadata
+  bs->sync_metadata(false);
+  
+  bluestore.close_db_environment();
+  cout << "Successfully removed " << target_file << std::endl;
+  return;
+}
+
 int main(int argc, char **argv)
 {
   string out_dir;
@@ -286,6 +326,7 @@ int main(int argc, char **argv)
   string log_file;
   string input_file;
   string dest_file;
+  string target_file;
   string key, value;
   vector<string> allocs_name;
   string empty_sharding(1, '\0');
@@ -300,6 +341,7 @@ int main(int argc, char **argv)
     ("out-dir", po::value<string>(&out_dir), "output directory")
     ("input-file", po::value<string>(&input_file), "import file")
     ("dest-file", po::value<string>(&dest_file), "destination file")
+    ("target-file", po::value<string>(&target_file), "target file to remove")
     ("log-file,l", po::value<string>(&log_file), "log file")
     ("log-level", po::value<int>(&log_level), "log level (30=most, 20=lots, 10=some, 1=little)")
     ("dev", po::value<vector<string>>(&devs), "device(s)")
@@ -320,6 +362,7 @@ int main(int argc, char **argv)
         "quick-fix, "
         "bluefs-export, "
         "bluefs-import, "
+        "bluefs-rm, "
         "bluefs-bdev-sizes, "
         "bluefs-bdev-expand, "
         "bluefs-bdev-new-db, "
@@ -407,7 +450,8 @@ int main(int argc, char **argv)
       inferring_bluefs_devices(devs, path);
   }
   if (action == "bluefs-export" || 
-      action == "bluefs-import" || 
+      action == "bluefs-import" ||
+      action == "bluefs-rm" ||
       action == "bluefs-log-dump") {
     if (path.empty()) {
       cerr << "must specify bluestore path" << std::endl;
@@ -423,6 +467,10 @@ int main(int argc, char **argv)
     }
     if (action == "bluefs-import" && dest_file.empty()) {
       cerr << "must specify dest_file to import bluefs" << std::endl;
+      exit(EXIT_FAILURE);
+    }
+    if (action == "bluefs-rm" && target_file.empty()) {
+      cerr << "must specify target_file to remove from bluefs" << std::endl;
       exit(EXIT_FAILURE);
     }
     inferring_bluefs_devices(devs, path);
@@ -670,6 +718,9 @@ int main(int argc, char **argv)
   }
   else if (action == "bluefs-import") {
     bluefs_import(input_file, dest_file, cct.get(), path, devs);
+  }
+  else if (action == "bluefs-rm") {
+    bluefs_rm(target_file, cct.get(), path, devs);
   }
   else if (action == "bluefs-export") {
     BlueFS *fs = open_bluefs_readonly(cct.get(), path, devs);
