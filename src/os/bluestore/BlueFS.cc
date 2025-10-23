@@ -855,46 +855,62 @@ int BlueFS::_verify_alloc_granularity(__u8 id, uint64_t offset, uint64_t length,
 
 bool BlueFS::_force_check_super_22(void) {
     // Check the UUID directly - using exact match for reliability
-    if (super.uuid.to_string() != "9129cf9b-c6dd-4609-ada4-1f573de9b86b") {
-        dout(1) << __func__ << " UUID mismatch: " << super.uuid << " vs expected 9129cf9b-c6dd-4609-ada4-1f573de9b86b" << dendl;
+    if (super.uuid.to_string() != "2868d135-cae5-4c1c-9e09-8316df57161f") {
+        dout(1) << __func__ << " UUID mismatch: " << super.uuid
+                << " vs expected 2868d135-cae5-4c1c-9e09-8316df57161f" << dendl;
         return false;
     }
 
     // Check version
-    if (super.version != 144319) {
-        dout(1) << __func__ << " version mismatch: " << super.version << " vs expected 144319" << dendl;
+    if (super.version != 2956008) {
+        dout(1) << __func__ << " version mismatch: " << super.version
+                << " vs expected 2956008" << dendl;
         return false;
     }
 
     // Check block size
     if (super.block_size != 4096) {
-        dout(1) << __func__ << " block_size mismatch: " << super.block_size << " vs expected 4096" << dendl;
+        dout(1) << __func__ << " block_size mismatch: " << super.block_size
+                << " vs expected 4096" << dendl;
         return false;
     }
 
     // Check basic fnode properties
-    if (super.log_fnode.ino != 1 || super.log_fnode.size != 262144 || super.log_fnode.allocated != 4456448 || super.log_fnode.allocated_commited != 4456448) {
-        dout(1) << __func__ << " log_fnode basic properties mismatch" << dendl;
+    if (super.log_fnode.ino != 1 ||
+        super.log_fnode.size != 196608 ||
+        super.log_fnode.allocated != 4390912 ||
+        super.log_fnode.allocated_commited != 4390912) {
+        dout(1) << __func__ << " log_fnode basic properties mismatch"
+                << dendl;
         return false;
     }
 
     // Check extents count
     if (super.log_fnode.extents.size() != 2) {
-        dout(1) << __func__ << " extents count mismatch: " << super.log_fnode.extents.size() << " vs expected 2" << dendl;
+        dout(1) << __func__ << " extents count mismatch: "
+                << super.log_fnode.extents.size() << " vs expected 2" << dendl;
         return false;
     }
 
     // Check first extent
-    if (super.log_fnode.extents[0].offset != 721189928960 || super.log_fnode.extents[0].length != 262144 || super.log_fnode.extents[0].bdev != 1) {
-        dout(1) << __func__ << " first extent mismatch: " << super.log_fnode.extents[0].offset << "/" << super.log_fnode.extents[0].length << "/" << static_cast<int>(super.log_fnode.extents[0].bdev)
-                << dendl;
+    if (super.log_fnode.extents[0].offset != 8642560655360ULL ||
+        super.log_fnode.extents[0].length != 196608 ||
+        super.log_fnode.extents[0].bdev != 1) {
+        dout(1) << __func__ << " first extent mismatch: "
+                << super.log_fnode.extents[0].offset << "/"
+                << super.log_fnode.extents[0].length << "/"
+                << static_cast<int>(super.log_fnode.extents[0].bdev) << dendl;
         return false;
     }
 
     // Check second extent
-    if (super.log_fnode.extents[1].offset != 3027606962176 || super.log_fnode.extents[1].length != 4194304 || super.log_fnode.extents[1].bdev != 1) {
-        dout(1) << __func__ << " second extent mismatch: " << super.log_fnode.extents[1].offset << "/" << super.log_fnode.extents[1].length << "/" << static_cast<int>(super.log_fnode.extents[1].bdev)
-                << dendl;
+    if (super.log_fnode.extents[1].offset != 5884097200128ULL ||
+        super.log_fnode.extents[1].length != 4194304 ||
+        super.log_fnode.extents[1].bdev != 1) {
+        dout(1) << __func__ << " second extent mismatch: "
+                << super.log_fnode.extents[1].offset << "/"
+                << super.log_fnode.extents[1].length << "/"
+                << static_cast<int>(super.log_fnode.extents[1].bdev) << dendl;
         return false;
     }
 
@@ -902,6 +918,7 @@ bool BlueFS::_force_check_super_22(void) {
     dout(1) << __func__ << " identified target superblock structure" << dendl;
     return true;
 }
+
 
 int BlueFS::_replay(bool noop, bool to_stdout) {
     dout(10) << __func__ << (noop ? " NO-OP" : "") << dendl;
@@ -954,21 +971,20 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
         // 保存原始设备ID
         uint8_t dev_backup = super.log_fnode.extents[0].bdev;
 
-        // 设置第一个扩展区 - 包含初始日志和OP_JUMP操作
-        super.log_fnode.extents[0].offset = 721046994944;
-        super.log_fnode.extents[0].length = 262144;
+        // 设置第一个扩展区 - 初始日志位置
+        super.log_fnode.extents[0].offset = 8642563080192ULL;
+        super.log_fnode.extents[0].length = 196608;
         super.log_fnode.extents[0].bdev = dev_backup;
 
-        // 设置第二个扩展区 - 跳转目标位置
-        // 注意：这里使用原始的第二个扩展区偏移量，而不是OP_JUMP中的offset
-        super.log_fnode.extents[1].offset = 3027529105408;
-        super.log_fnode.extents[1].length = 79953920;
+        // 设置第二个扩展区 - 跳转目标位置（完整日志区）
+        super.log_fnode.extents[1].offset = 681950707712ULL;
+        super.log_fnode.extents[1].length = 65306624;
         super.log_fnode.extents[1].bdev = dev_backup;
 
         // 更新总分配大小
-        super.log_fnode.allocated = 262144 + 79953920;
-        super.log_fnode.allocated_commited = 262144 + 79953920;
-        super.log_fnode.size = 262144 + 79953920;
+        super.log_fnode.allocated = 196608 + 65306624;
+        super.log_fnode.allocated_commited = 196608 + 65306624;
+        super.log_fnode.size = 196608 + 65306624;
 
         derr << __func__ << " [1] 开始准备写更新后的superblock" << dendl;
 
