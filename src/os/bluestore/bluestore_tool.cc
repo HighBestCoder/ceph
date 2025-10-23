@@ -269,6 +269,10 @@ static void bluefs_import(
     exit(EXIT_FAILURE);
   }
 
+  // NOTE: The superblock area (first 8KB) is automatically protected during mount()
+  // See BlueFS::mount() Step 6 for details. This protection is necessary because
+  // old OSDs may have block_reserved=0 in their on-disk superblock.
+
   BlueFS::FileWriter *h;
   fs::path file_path(dest_file);
   const string dir = file_path.parent_path();
@@ -314,6 +318,8 @@ static void bluefs_import(
   
   fs->umount();
   delete fs;
+  
+  cout << "Successfully imported " << input_file << " to " << dest_file << std::endl;
   return;
 }
 
