@@ -281,6 +281,10 @@ static void bluefs_import(
   f.close();
   fs->fsync(h);
   fs->close_writer(h);
+  
+  // Sync metadata to ensure the imported file is properly persisted
+  fs->sync_metadata(false);
+  
   fs->umount();
   delete fs;
   return;
