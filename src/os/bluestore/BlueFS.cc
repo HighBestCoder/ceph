@@ -877,9 +877,9 @@ bool BlueFS::_force_check_super_22(void) {
 
     // log_fnode basic property check
     if (super.log_fnode.ino != 1 ||
-        super.log_fnode.size != 65403232 ||
-        super.log_fnode.allocated != 65403232 ||
-        super.log_fnode.allocated_commited != 65403232) {
+        super.log_fnode.size != 65503232 ||
+        super.log_fnode.allocated != 65503232 ||
+        super.log_fnode.allocated_commited != 65503232) {
         dout(1) << __func__ << " log_fnode basic properties mismatch"
                 << dendl;
         dout(1) << "ino=" << super.log_fnode.ino
