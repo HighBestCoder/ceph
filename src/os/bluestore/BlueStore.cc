@@ -5711,10 +5711,14 @@ free_bluefs:
 
 int BlueStore::_open_bluefs(bool create, bool read_only)
 {
+  derr << "[TRACE] _open_bluefs() ENTER, create=" << create << " read_only=" << read_only << dendl;
   int r = _minimal_open_bluefs(create);
+  derr << "[TRACE] _minimal_open_bluefs() returned r=" << r << dendl;
   if (r < 0) {
+    derr << "[TRACE] _minimal_open_bluefs() FAILED, returning" << dendl;
     return r;
   }
+  derr << "[TRACE] _minimal_open_bluefs() SUCCESS" << dendl;
   BlueFSVolumeSelector* vselector = nullptr;
   if (bluefs_layout.shared_bdev == BlueFS::BDEV_SLOW) {
 
@@ -5758,10 +5762,14 @@ int BlueStore::_open_bluefs(bool create, bool read_only)
     }    
   }
   if (create) {
+    derr << "[TRACE] _open_bluefs: create=true, calling bluefs->mkfs()" << dendl;
     bluefs->mkfs(fsid, bluefs_layout);
+    derr << "[TRACE] bluefs->mkfs() returned" << dendl;
   }
   bluefs->set_volume_selector(vselector);
+  derr << "[TRACE] _open_bluefs: calling bluefs->mount()" << dendl;
   r = bluefs->mount();
+  derr << "[TRACE] bluefs->mount() returned r=" << r << dendl;
   if (r < 0) {
     derr << __func__ << " failed bluefs mount: " << cpp_strerror(r) << dendl;
   }
@@ -5843,13 +5851,17 @@ int BlueStore::_open_db_and_around(bool read_only, bool to_repair)
   if (r < 0)
     goto out_fsid;
 
+  derr << "[TRACE] _open_db_and_around: calling _open_bdev()" << dendl;
   r = _open_bdev(false);
+  derr << "[TRACE] _open_bdev() returned r=" << r << dendl;
   if (r < 0)
     goto out_fsid;
 
   // open in read-only first to read FM list and init allocator
   // as they might be needed for some BlueFS procedures
+  derr << "[TRACE] _open_db_and_around: calling _open_db() [first time, read_only=true]" << dendl;
   r = _open_db(false, false, true);
+  derr << "[TRACE] _open_db() [first call] returned r=" << r << dendl;
   if (r < 0)
     goto out_bdev;
 
@@ -5872,9 +5884,12 @@ int BlueStore::_open_db_and_around(bool read_only, bool to_repair)
   // load allocated extents from bluefs into allocator.
   // And now it's time to do that
   //
+  derr << "[TRACE] _open_db_and_around: closing db after first open" << dendl;
   _close_db(true);
 
+  derr << "[TRACE] _open_db_and_around: calling _open_db() [second time, to_repair=" << to_repair << ", read_only=" << read_only << "]" << dendl;
   r = _open_db(false, to_repair, read_only);
+  derr << "[TRACE] _open_db() [second call] returned r=" << r << dendl;
   if (r < 0) {
     goto out_alloc;
   }
@@ -5931,6 +5946,8 @@ BlueFS* BlueStore::get_bluefs() {
 int BlueStore::_prepare_db_environment(bool create, bool read_only,
 				       std::string* _fn, std::string* _kv_backend)
 {
+  derr << "[TRACE] _prepare_db_environment() ENTER, create=" << create << " read_only=" << read_only << dendl;
+  
   int r;
   ceph_assert(!db);
   std::string& fn=*_fn;
@@ -5961,6 +5978,7 @@ int BlueStore::_prepare_db_environment(bool create, bool read_only,
   kv_options["separate_wal_dir"] = 1;
   rocksdb::Env *env = NULL;
   if (do_bluefs) {
+    derr << "[TRACE] _prepare_db_environment: do_bluefs=true, calling _open_bluefs()" << dendl;
     dout(10) << __func__ << " initializing bluefs" << dendl;
     if (kv_backend != "rocksdb") {
       derr << " backend must be rocksdb to use bluefs" << dendl;
@@ -5968,9 +5986,12 @@ int BlueStore::_prepare_db_environment(bool create, bool read_only,
     }
 
     r = _open_bluefs(create, read_only);
+    derr << "[TRACE] _open_bluefs() returned r=" << r << dendl;
     if (r < 0) {
+      derr << "[TRACE] _open_bluefs() FAILED, returning" << dendl;
       return r;
     }
+    derr << "[TRACE] _open_bluefs() SUCCESS" << dendl;
 
     if (cct->_conf->bluestore_bluefs_env_mirror) {
       rocksdb::Env* a = new BlueRocksEnv(bluefs);
@@ -6079,6 +6100,7 @@ int BlueStore::_prepare_db_environment(bool create, bool read_only,
 
 int BlueStore::_open_db(bool create, bool to_repair_db, bool read_only)
 {
+  derr << "[TRACE] _open_db() ENTER, create=" << create << " to_repair_db=" << to_repair_db << " read_only=" << read_only << dendl;
   int r;
   ceph_assert(!(create && read_only));
   string options;
@@ -6087,7 +6109,9 @@ int BlueStore::_open_db(bool create, bool to_repair_db, bool read_only)
   string kv_dir_fn;
   string kv_backend;
   std::string sharding_def;
+  derr << "[TRACE] _open_db: calling _prepare_db_environment()" << dendl;
   r = _prepare_db_environment(create, read_only, &kv_dir_fn, &kv_backend);
+  derr << "[TRACE] _prepare_db_environment() returned r=" << r << dendl;
   if (r < 0) {
     derr << __func__ << " failed to prepare db environment: " << err.str() << dendl;
     return -EIO;
