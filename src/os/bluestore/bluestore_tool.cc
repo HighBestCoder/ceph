@@ -178,7 +178,12 @@ void add_devices(
 
     // We provide no shared allocator which prevents bluefs to operate in R/W mode.
     // Read-only mode isn't strictly enforced though
-    int r = fs->add_block_device(e.second, e.first, false, 0); // 'reserved' is fake
+    // IMPORTANT: Must reserve first 8K to protect:
+    //   - Device label at offset 0-4095 (4KB)
+    //   - BlueFS superblock at offset 4096-8191 (4KB)
+    // If we don't reserve this space, BlueFS allocator will use offset 0 and corrupt the device label!
+    constexpr uint64_t SUPER_RESERVED = 8192;
+    int r = fs->add_block_device(e.second, e.first, false, SUPER_RESERVED);
     if (r < 0) {
       cerr << "unable to open " << e.first << ": " << cpp_strerror(r) << std::endl;
       exit(EXIT_FAILURE);
