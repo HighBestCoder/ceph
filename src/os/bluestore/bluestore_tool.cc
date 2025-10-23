@@ -282,14 +282,18 @@ static void bluefs_rm(
   const string& path,
   const vector<string>& devs)
 {
-  BlueStore bluestore(cct, path);
-  KeyValueDB *db_ptr;
-  int r = bluestore.open_db_environment(&db_ptr, false);
+  // Open BlueFS directly without opening RocksDB
+  // This is important because the RocksDB may reference files we want to delete
+  validate_path(cct, path, true);
+  BlueFS *fs = new BlueFS(cct);
+
+  add_devices(fs, cct, devs);
+
+  int r = fs->mount();
   if (r < 0) {
-    cerr << "error preparing db environment: " << cpp_strerror(r) << std::endl;
+    cerr << "unable to mount bluefs: " << cpp_strerror(r) << std::endl;
     exit(EXIT_FAILURE);
   }
-  BlueFS* bs = bluestore.get_bluefs();
 
   // Parse target file path
   fs::path file_path(target_file);
@@ -300,35 +304,53 @@ static void bluefs_rm(
   cout << "  Directory: " << dir << std::endl;
   cout << "  Filename: " << file_name << std::endl;
   
+  // Safety check: prevent deletion of critical RocksDB files
+  if (file_name == "MANIFEST" || file_name.find("MANIFEST-") == 0 ||
+      file_name == "CURRENT" || file_name == "IDENTITY" ||
+      file_name == "LOCK" || file_name == "OPTIONS") {
+    cerr << "ERROR: Cannot delete critical RocksDB file: " << file_name << std::endl;
+    cerr << "Deleting this file will make the database unopenable." << std::endl;
+    fs->umount();
+    delete fs;
+    exit(EXIT_FAILURE);
+  }
+  
   // Delete the file
-  r = bs->unlink(dir, file_name);
+  r = fs->unlink(dir, file_name);
   if (r < 0) {
     cerr << "failed to unlink " << target_file << ": " << cpp_strerror(r) << std::endl;
-    bluestore.close_db_environment();
+    fs->umount();
+    delete fs;
     exit(EXIT_FAILURE);
   }
   
   // Sync metadata
-  bs->sync_metadata(false);
+  fs->sync_metadata(false);
   
-  bluestore.close_db_environment();
+  fs->umount();
+  delete fs;
+  
   cout << "Successfully removed " << target_file << std::endl;
+  
+  // Warn if SST file was deleted
+  if (file_name.find(".sst") != string::npos || file_name.find(".log") != string::npos) {
+    cout << std::endl;
+    cout << "WARNING: You have deleted a RocksDB data file." << std::endl;
+    cout << "The database may fail to open if this file is still referenced in MANIFEST." << std::endl;
+    cout << "You may need to use 'ceph-bluestore-tool repair' to fix the database." << std::endl;
+    cout << "Or use RocksDB's ldb tool to repair the database:" << std::endl;
+    cout << "  ldb repair --db=/path/to/db" << std::endl;
+  }
+  
   return;
 }
-
 static void bluefs_ls(
   CephContext *cct,
   const string& path,
   const vector<string>& devs)
 {
-  BlueStore bluestore(cct, path);
-  KeyValueDB *db_ptr;
-  int r = bluestore.open_db_environment(&db_ptr, false);
-  if (r < 0) {
-    cerr << "error preparing db environment: " << cpp_strerror(r) << std::endl;
-    exit(EXIT_FAILURE);
-  }
-  BlueFS* bs = bluestore.get_bluefs();
+  // Open BlueFS directly without opening RocksDB
+  BlueFS *fs = open_bluefs_readonly(cct, path, devs);
 
   cout << "Listing BlueFS files:" << std::endl;
   cout << std::string(80, '=') << std::endl;
@@ -337,10 +359,11 @@ static void bluefs_ls(
   vector<string> dirs;
   
   // Get root directory listing
-  r = bs->readdir("", &dirs);
+  int r = fs->readdir("", &dirs);
   if (r < 0) {
     cerr << "failed to read root directory: " << cpp_strerror(r) << std::endl;
-    bluestore.close_db_environment();
+    fs->umount();
+    delete fs;
     exit(EXIT_FAILURE);
   }
   
@@ -352,7 +375,7 @@ static void bluefs_ls(
   
   for (const auto& dirname : dirs) {
     vector<string> files;
-    r = bs->readdir(dirname, &files);
+    r = fs->readdir(dirname, &files);
     if (r < 0) {
       cerr << "failed to read directory '" << dirname << "': " << cpp_strerror(r) << std::endl;
       continue;
@@ -367,7 +390,7 @@ static void bluefs_ls(
     
     for (const auto& filename : files) {
       BlueFS::FileReader* file_reader = nullptr;
-      r = bs->open_for_read(dirname, filename, &file_reader, false);
+      r = fs->open_for_read(dirname, filename, &file_reader, false);
       
       uint64_t file_size = 0;
       if (r >= 0 && file_reader && file_reader->file) {
@@ -389,6 +412,61 @@ static void bluefs_ls(
   cout << "Total: " << total_files << " files, " 
        << total_size << " bytes (" 
        << (total_size / 1024.0 / 1024.0) << " MB)" << std::endl;
+  
+  fs->umount();
+  delete fs;
+  return;
+}
+
+static void bluefs_repair_rocksdb(
+  CephContext *cct,
+  const string& path,
+  const vector<string>& devs)
+{
+  cout << "Repairing RocksDB after BlueFS file deletion..." << std::endl;
+  
+  BlueStore bluestore(cct, path);
+  KeyValueDB *db_ptr;
+  int r = bluestore.open_db_environment(&db_ptr, false);
+  if (r < 0) {
+    cerr << "error preparing db environment: " << cpp_strerror(r) << std::endl;
+    cerr << "Database may be corrupted. Attempting recovery..." << std::endl;
+  }
+  
+  BlueFS* fs = bluestore.get_bluefs();
+  if (!fs) {
+    cerr << "No BlueFS found" << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  
+  // List all SST files currently in BlueFS
+  cout << "Scanning BlueFS for existing SST files..." << std::endl;
+  std::set<string> existing_sst_files;
+  
+  vector<string> dirs = {"db", "db.slow", "db.wal"};
+  
+  for (const auto& dirname : dirs) {
+    vector<string> ls;
+    r = fs->readdir(dirname, &ls);
+    if (r < 0) {
+      // Directory might not exist, skip it
+      continue;
+    }
+    
+    for (const auto& filename : ls) {
+      if (filename.find(".sst") != string::npos) {
+        existing_sst_files.insert(dirname + "/" + filename);
+        cout << "  Found: " << dirname << "/" << filename << std::endl;
+      }
+    }
+  }
+  
+  cout << "Found " << existing_sst_files.size() << " SST files in BlueFS" << std::endl;
+  cout << std::endl;
+  cout << "To complete the repair, you need to:" << std::endl;
+  cout << "1. Export RocksDB data: ceph-bluestore-tool --path " << path << " --command bluefs-export --out-dir /tmp/rocksdb-export" << std::endl;
+  cout << "2. Use RocksDB ldb tool to repair the database in /tmp/rocksdb-export" << std::endl;
+  cout << "3. Import repaired data: ceph-bluestore-tool --path " << path << " --command bluefs-import --in-dir /tmp/rocksdb-export" << std::endl;
   
   bluestore.close_db_environment();
   return;
@@ -443,6 +521,7 @@ int main(int argc, char **argv)
         "bluefs-import, "
         "bluefs-rm, "
         "bluefs-ls, "
+        "bluefs-repair-rocksdb, "
         "bluefs-bdev-sizes, "
         "bluefs-bdev-expand, "
         "bluefs-bdev-new-db, "
@@ -533,6 +612,7 @@ int main(int argc, char **argv)
       action == "bluefs-import" ||
       action == "bluefs-rm" ||
       action == "bluefs-ls" ||
+      action == "bluefs-repair-rocksdb" ||
       action == "bluefs-log-dump") {
     if (path.empty()) {
       cerr << "must specify bluestore path" << std::endl;
@@ -805,6 +885,9 @@ int main(int argc, char **argv)
   }
   else if (action == "bluefs-ls") {
     bluefs_ls(cct.get(), path, devs);
+  }
+  else if (action == "bluefs-repair-rocksdb") {
+    bluefs_repair_rocksdb(cct.get(), path, devs);
   }
   else if (action == "bluefs-export") {
     BlueFS *fs = open_bluefs_readonly(cct.get(), path, devs);
