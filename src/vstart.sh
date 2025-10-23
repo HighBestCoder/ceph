@@ -2,6 +2,10 @@
 # -*- mode:sh; tab-width:4; sh-basic-offset:4; indent-tabs-mode:nil -*-
 # vim: softtabstop=4 shiftwidth=4 expandtab
 
+ ps aux | grep ceph | awk '{print $2}' | xargs -i kill -9 {}
+
+ # MON=1 MDS=0 OSD=1 VSTART_DEST="/ceph/ceph/build/out" ../src/vstart.sh -d -n -x
+
 # abort on failure
 set -e
 
@@ -658,12 +662,8 @@ EOF
         bluestore_block_wal_create = false
         bluestore_spdk_mem = 2048"
         else
-            BLUESTORE_OPTS="        bluestore block db path = $CEPH_DEV_DIR/osd\$id/block.db.file
-        bluestore block db size = 1073741824
-        bluestore block db create = true
-        bluestore block wal path = $CEPH_DEV_DIR/osd\$id/block.wal.file
-        bluestore block wal size = 1048576000
-        bluestore block wal create = true"
+            BLUESTORE_OPTS="        bluefs_log_compact_min_size = 1048576
+        bluefs_log_compact_min_ratio = 0.1"
         fi
         if [ "$zoned_enabled" -eq 1 ]; then
             BLUESTORE_OPTS+="
