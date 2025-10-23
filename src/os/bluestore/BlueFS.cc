@@ -669,6 +669,28 @@ int BlueFS::mount() {
     derr << "[TRACE] _replay() SUCCESS" << dendl;
 
     derr << "[TRACE] Step 6: Initializing freelist..." << dendl;
+    
+    // CRITICAL: First protect the superblock area (0-8191) if block_reserved is too small
+    // This MUST be done BEFORE we mark file extents as allocated, because:
+    // 1. After _init_alloc(), the range [block_reserved, total_size] is marked as FREE
+    // 2. If block_reserved=0, then 0-8191 is incorrectly marked as FREE
+    // 3. We need to remove it from FREE list before any file extent processing
+    // 4. If a file legitimately uses 0-8191 (from buggy allocation), we'll mark it again
+    //    during file extent processing, which is safe (idempotent)
+    for (unsigned id = 0; id < alloc.size(); ++id) {
+        if (!alloc[id] || is_shared_alloc(id)) {
+            continue;
+        }
+        // Check if block_reserved was incorrectly set to 0 in superblock
+        if (block_reserved[id] < SUPER_RESERVED) {
+            dout(1) << __func__ << " WARNING: block_reserved[" << id << "]=" << block_reserved[id]
+                    << " < " << SUPER_RESERVED << ", force protecting superblock area BEFORE file extent processing" << dendl;
+            // Remove 0-8191 from free list NOW, before processing file extents
+            alloc[id]->init_rm_free(0, SUPER_RESERVED);
+        }
+    }
+    
+    // Now mark all existing file extents as allocated
     // init freelist
     for (auto& p : file_map) {
         dout(30) << __func__ << " noting alloc for " << p.second->fnode << dendl;
@@ -690,24 +712,6 @@ int BlueFS::mount() {
         dout(1) << __func__ << " shared bdev not used" << dendl;
     }
     derr << "[TRACE] Freelist initialized" << dendl;
-
-    // CRITICAL: Ensure the first 8KB is protected on all devices
-    // This is necessary if the on-disk superblock has block_reserved=0 (from buggy old code)
-    // Even though we mark extents as allocated above, we need to ensure the superblock
-    // area (0-4095: device label, 4096-8191: BlueFS superblock) is never allocated.
-    // If a file legitimately uses this area (from a buggy allocation), it's already marked
-    // above, so this is idempotent.
-    for (unsigned id = 0; id < alloc.size(); ++id) {
-        if (!alloc[id] || is_shared_alloc(id)) {
-            continue;
-        }
-        // Check if block_reserved was incorrectly set to 0 in superblock
-        if (block_reserved[id] < SUPER_RESERVED) {
-            dout(1) << __func__ << " WARNING: block_reserved[" << id << "]=" << block_reserved[id]
-                    << " < " << SUPER_RESERVED << ", force protecting superblock area" << dendl;
-            alloc[id]->init_rm_free(0, SUPER_RESERVED);
-        }
-    }
 
     derr << "[TRACE] Step 7: Setting up log writer..." << dendl;
     // set up the log for future writes
