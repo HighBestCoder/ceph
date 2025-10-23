@@ -245,20 +245,25 @@ static void bluefs_import(
     cerr << "open " << input_file.c_str() << " failed: " << cpp_strerror(r) << std::endl;
     exit(EXIT_FAILURE);
   }
-  BlueStore bluestore(cct, path);
-  KeyValueDB *db_ptr;
-  r = bluestore.open_db_environment(&db_ptr, false);
+  
+  // Open BlueFS directly without opening RocksDB
+  validate_path(cct, path, true);
+  BlueFS *fs = new BlueFS(cct);
+
+  add_devices(fs, cct, devs);
+
+  r = fs->mount();
   if (r < 0) {
-    cerr << "error preparing db environment: " << cpp_strerror(r) << std::endl;
+    cerr << "unable to mount bluefs: " << cpp_strerror(r) << std::endl;
+    f.close();
     exit(EXIT_FAILURE);
   }
-  BlueFS* bs = bluestore.get_bluefs();
 
   BlueFS::FileWriter *h;
   fs::path file_path(dest_file);
   const string dir = file_path.parent_path();
   const string file_name = file_path.filename();
-  bs->open_for_write(dir, file_name, &h, false);
+  fs->open_for_write(dir, file_name, &h, false);
   uint64_t max_block = 4096;
   char buf[max_block];
   uint64_t left = fs::file_size(input_file.c_str());
@@ -270,9 +275,10 @@ static void bluefs_import(
     left -= size;
   }
   f.close();
-  bs->fsync(h);
-  bs->close_writer(h);
-  bluestore.close_db_environment();
+  fs->fsync(h);
+  fs->close_writer(h);
+  fs->umount();
+  delete fs;
   return;
 }
 
