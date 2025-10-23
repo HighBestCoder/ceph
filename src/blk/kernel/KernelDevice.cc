@@ -226,7 +226,7 @@ int KernelDevice::open(const string& p)
     char partition[PATH_MAX], devname[PATH_MAX];
     if ((r = blkdev_buffered.partition(partition, PATH_MAX)) ||
 	(r = blkdev_buffered.wholedisk(devname, PATH_MAX))) {
-      derr << "unable to get device name for " << path << ": "
+      derr << "[JIYOU] unable to get device name for " << path << ": "
 	<< cpp_strerror(r) << dendl;
       rotational = true;
     } else {

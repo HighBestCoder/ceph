@@ -29,6 +29,7 @@ namespace fs = std::experimental::filesystem;
 #include "os/bluestore/BlueStore.h"
 #include "common/admin_socket.h"
 #include "kv/RocksDBStore.h"
+#include "common/BackTrace.h"
 
 namespace po = boost::program_options;
 
@@ -267,6 +268,27 @@ static void bluefs_import(
   fs::path file_path(dest_file);
   const string dir = file_path.parent_path();
   const string file_name = file_path.filename();
+  
+  // Check if file already exists and remove it first
+  // This ensures we don't have stale metadata
+  BlueFS::FileReader *existing_file = nullptr;
+  r = fs->open_for_read(dir, file_name, &existing_file, false);
+  if (r >= 0) {
+    // File exists, delete it first
+    delete existing_file;
+    cout << "File " << dest_file << " already exists, removing it first..." << std::endl;
+    r = fs->unlink(dir, file_name);
+    if (r < 0) {
+      cerr << "failed to remove existing file " << dest_file << ": " << cpp_strerror(r) << std::endl;
+      fs->umount();
+      delete fs;
+      f.close();
+      exit(EXIT_FAILURE);
+    }
+    // Sync metadata after deletion
+    fs->sync_metadata(false);
+  }
+  
   fs->open_for_write(dir, file_name, &h, false);
   uint64_t max_block = 4096;
   char buf[max_block];
