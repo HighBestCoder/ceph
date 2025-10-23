@@ -120,7 +120,11 @@ void parse_devices(
     if (r < 0) {
       cerr << "unable to read label for " << d << ": "
 	   << cpp_strerror(r) << std::endl;
-      exit(EXIT_FAILURE);
+      cerr << "assuming this is the main device" << std::endl;
+      // If we can't read the label, assume it's the main device
+      // This allows bluefs tools to work even when labels are corrupted
+      main = d;
+      continue;
     }
     int id = -1;
     if (label.description == "main")
