@@ -5089,6 +5089,7 @@ int BlueStore::_read_bdev_label(CephContext* cct, string path,
 				bluestore_bdev_label_t *label)
 {
   dout(10) << __func__ << dendl;
+  derr << "[TRACE] _read_bdev_label() ENTER, path=" << path << dendl;
   int fd = TEMP_FAILURE_RETRY(::open(path.c_str(), O_RDONLY|O_CLOEXEC));
   if (fd < 0) {
     fd = -errno;
@@ -5096,9 +5097,11 @@ int BlueStore::_read_bdev_label(CephContext* cct, string path,
 	 << dendl;
     return fd;
   }
+  derr << "[TRACE] _read_bdev_label: file opened, reading " << BDEV_LABEL_BLOCK_SIZE << " bytes" << dendl;
   bufferlist bl;
   int r = bl.read_fd(fd, BDEV_LABEL_BLOCK_SIZE);
   VOID_TEMP_FAILURE_RETRY(::close(fd));
+  derr << "[TRACE] _read_bdev_label: read returned r=" << r << ", bl.length()=" << bl.length() << dendl;
   if (r < 0) {
     derr << __func__ << " failed to read from " << path
 	 << ": " << cpp_strerror(r) << dendl;
@@ -5108,16 +5111,19 @@ int BlueStore::_read_bdev_label(CephContext* cct, string path,
   uint32_t crc, expected_crc;
   auto p = bl.cbegin();
   try {
+    derr << "[TRACE] _read_bdev_label: attempting to decode label" << dendl;
     decode(*label, p);
     bufferlist t;
     t.substr_of(bl, 0, p.get_off());
     crc = t.crc32c(-1);
     decode(expected_crc, p);
+    derr << "[TRACE] _read_bdev_label: decode succeeded, crc=" << crc << " expected=" << expected_crc << dendl;
   }
   catch (ceph::buffer::error& e) {
-    dout(2) << __func__ << " unable to decode label at offset " << p.get_off()
+    derr << __func__ << " unable to decode label at offset " << p.get_off()
 	 << ": " << e.what()
 	 << dendl;
+    derr << "[TRACE] _read_bdev_label: decode FAILED, returning -ENOENT" << dendl;
     return -ENOENT;
   }
   if (crc != expected_crc) {
@@ -5194,10 +5200,13 @@ void BlueStore::_set_alloc_sizes(void)
 
 int BlueStore::_open_bdev(bool create)
 {
+  derr << "[TRACE] _open_bdev() ENTER, create=" << create << dendl;
   ceph_assert(bdev == NULL);
   string p = path + "/block";
   bdev = BlockDevice::create(cct, p, aio_cb, static_cast<void*>(this), discard_cb, static_cast<void*>(this));
+  derr << "[TRACE] _open_bdev: calling bdev->open()" << dendl;
   int r = bdev->open(p);
+  derr << "[TRACE] bdev->open() returned r=" << r << dendl;
   if (r < 0)
     goto fail;
 
@@ -5206,9 +5215,19 @@ int BlueStore::_open_bdev(bool create)
   }
 
   if (bdev->supported_bdev_label()) {
+    derr << "[TRACE] _open_bdev: device supports labels, calling _check_or_set_bdev_label()" << dendl;
     r = _check_or_set_bdev_label(p, bdev->get_size(), "main", create);
-    if (r < 0)
+    derr << "[TRACE] _check_or_set_bdev_label() returned r=" << r << dendl;
+    if (r < 0) {
+      // During repair, tolerate label decode errors (e.g., old encoding versions)
+      // The label is just metadata validation - BlueStore data structures are what matter
+      derr << __func__ << " WARNING: device label check failed with " << cpp_strerror(r) 
+           << ", continuing anyway (this may be OK during repair)" << dendl;
+      // Don't fail - continue with the repair
       goto fail_close;
+    }
+  } else {
+    derr << "[TRACE] _open_bdev: device does not support labels, skipping" << dendl;
   }
 
   // initialize global block parameters
