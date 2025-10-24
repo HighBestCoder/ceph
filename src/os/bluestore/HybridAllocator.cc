@@ -160,6 +160,9 @@ void HybridAllocator::init_rm_free(uint64_t offset, uint64_t length)
   if (!length)
     return;
   std::lock_guard l(lock);
+
+  derr << "JIYOU offset: " << offset  << ' ' << "length: " << length << dendl;
+
   ldout(cct, 10) << __func__ << std::hex
                  << " offset 0x" << offset
                  << " length 0x" << length

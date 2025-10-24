@@ -127,22 +127,6 @@ int KernelDevice::open(const string& p)
 {
   path = p;
   int r = 0, i = 0;
-  
-  derr << "========================================" << dendl;
-  derr << "[TRACE] KernelDevice::open() ENTER" << dendl;
-  derr << "[TRACE] path: " << path << dendl;
-  derr << "========================================" << dendl;
-  derr << "[TRACE] Call Stack:" << dendl;
-  
-  // Print call stack
-  ceph::BackTrace bt(1);
-  std::ostringstream oss;
-  bt.print(oss);
-  derr << oss.str() << dendl;
-  
-  derr << "========================================" << dendl;
-  
-  dout(1) << __func__ << " path " << path << dendl;
 
   for (i = 0; i < WRITE_LIFE_MAX; i++) {
     int fd = ::open(path.c_str(), O_RDWR | O_DIRECT);

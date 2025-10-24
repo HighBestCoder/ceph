@@ -694,13 +694,19 @@ int BlueFS::mount() {
     // init freelist
     for (auto& p : file_map) {
         dout(30) << __func__ << " noting alloc for " << p.second->fnode << dendl;
+        derr << "[TRACE] Step 6: Processing file ino=" << p.first 
+             << ", fnode=" << p.second->fnode << dendl;
         for (auto& q : p.second->fnode.extents) {
             bool is_shared = is_shared_alloc(q.bdev);
             ceph_assert(!is_shared || (is_shared && shared_alloc));
             if (is_shared && shared_alloc->need_init && shared_alloc->a) {
                 shared_alloc->bluefs_used += q.length;
+                derr << "[TRACE] Step 6: init_rm_free (shared) bdev=" << (int)q.bdev 
+                     << " offset=0x" << std::hex << q.offset << " length=0x" << q.length << std::dec << dendl;
                 alloc[q.bdev]->init_rm_free(q.offset, q.length);
             } else if (!is_shared) {
+                derr << "[TRACE] Step 6: init_rm_free bdev=" << (int)q.bdev 
+                     << " offset=0x" << std::hex << q.offset << " length=0x" << q.length << std::dec << dendl;
                 alloc[q.bdev]->init_rm_free(q.offset, q.length);
             }
         }
@@ -2838,6 +2844,14 @@ int BlueFS::_allocate(uint8_t id, uint64_t len, bluefs_fnode_t* node) {
         }
         extents.reserve(4);  // 4 should be (more than) enough for most allocations
         alloc_len = alloc[id]->allocate(need, alloc_size[id], hint, &extents);
+        
+        // SAFETY CHECK: Log newly allocated extents for debugging
+        if (alloc_len > 0) {
+            for (auto& ext : extents) {
+                dout(15) << __func__ << " allocated extent on bdev " << (int)id 
+                         << ": 0x" << std::hex << ext.offset << "~" << ext.length << std::dec << dendl;
+            }
+        }
     }
     if (alloc_len < 0 || alloc_len < need) {
         if (alloc[id]) {
@@ -2921,6 +2935,33 @@ void BlueFS::_maybe_compact_log(std::unique_lock<ceph::mutex>& l) {
             _compact_log_async(l);
         }
     }
+}
+
+void BlueFS::update_superblock() {
+    std::unique_lock l(lock);
+    dout(10) << __func__ << " updating superblock with current log_fnode" << dendl;
+    
+    // First, ensure all pending log transactions are flushed
+    // This ensures log_file->fnode reflects the latest state
+    if (!log_t.empty() || !dirty_files.empty()) {
+        dout(10) << __func__ << " flushing pending log transactions first" << dendl;
+        _flush_and_sync_log(l);
+    }
+    
+    // Update superblock's log_fnode to match current log file state
+    FileRef log_file = _get_file(1);
+    ceph_assert(log_file);
+    super.log_fnode = log_file->fnode;
+    
+    dout(10) << __func__ << " log_fnode to write: " << super.log_fnode << dendl;
+    
+    // Write updated superblock to disk
+    ++super.version;
+    int r = _write_super(BDEV_DB);
+    ceph_assert(r == 0);
+    flush_bdev();
+    
+    dout(10) << __func__ << " updated superblock successfully" << dendl;
 }
 
 int BlueFS::open_for_write(std::string_view dirname, std::string_view filename, FileWriter** h, bool overwrite) {

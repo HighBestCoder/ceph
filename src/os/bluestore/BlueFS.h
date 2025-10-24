@@ -490,6 +490,11 @@ public:
     return alloc_size[id];
   }
   int fsck();
+  
+  // Get superblock for inspection
+  const bluefs_super_t& get_super() const {
+    return super;
+  }
 
   int device_migrate_to_new(
     CephContext *cct,
@@ -553,6 +558,11 @@ public:
   void sync_metadata(bool avoid_compact);
   /// test and compact log, if necessary
   void _maybe_compact_log(std::unique_lock<ceph::mutex>& l);
+
+  /// update superblock to reflect current log_fnode state
+  /// This is necessary after operations that modify the log file
+  /// to prevent allocator conflicts during subsequent mounts
+  void update_superblock();
 
   void set_volume_selector(BlueFSVolumeSelector* s) {
     vselector.reset(s);
