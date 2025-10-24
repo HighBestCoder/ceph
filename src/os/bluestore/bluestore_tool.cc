@@ -399,8 +399,8 @@ static void bluefs_ls(
   // Open BlueFS directly without opening RocksDB
   BlueFS *fs = open_bluefs_readonly(cct, path, devs);
 
-  cout << "Listing BlueFS files:" << std::endl;
-  cout << std::string(80, '=') << std::endl;
+  cout << "Listing BlueFS files with disk space allocation details:" << std::endl;
+  cout << std::string(120, '=') << std::endl;
   
   // List all directories and their files
   vector<string> dirs;
@@ -419,6 +419,7 @@ static void bluefs_ls(
   
   uint64_t total_files = 0;
   uint64_t total_size = 0;
+  uint64_t total_allocated = 0;
   
   for (const auto& dirname : dirs) {
     vector<string> files;
@@ -432,33 +433,72 @@ static void bluefs_ls(
       continue;
     }
     
-    cout << "\nDirectory: " << (dirname.empty() ? "/" : dirname) << std::endl;
-    cout << std::string(80, '-') << std::endl;
+    cout << "\n━━━ Directory: " << (dirname.empty() ? "/" : dirname) << " ━━━" << std::endl;
     
     for (const auto& filename : files) {
       BlueFS::FileReader* file_reader = nullptr;
       r = fs->open_for_read(dirname, filename, &file_reader, false);
       
-      uint64_t file_size = 0;
       if (r >= 0 && file_reader && file_reader->file) {
-        file_size = file_reader->file->fnode.size;
+        auto& fnode = file_reader->file->fnode;
+        uint64_t file_size = fnode.size;
+        uint64_t file_allocated = fnode.get_allocated();
+        
+        total_files++;
+        total_size += file_size;
+        total_allocated += file_allocated;
+        
+        // Print file basic info
+        cout << "\n  📄 " << std::left << std::setw(45) << filename;
+        cout << " │ Size: " << std::right << std::setw(12) << file_size << " bytes";
+        cout << " │ Allocated: " << std::setw(12) << file_allocated << " bytes";
+        cout << " │ ino: " << fnode.ino << std::endl;
+        
+        // Print extent details
+        if (!fnode.extents.empty()) {
+          cout << "     └─ Extents (" << fnode.extents.size() << "):" << std::endl;
+          for (size_t i = 0; i < fnode.extents.size(); i++) {
+            const auto& ext = fnode.extents[i];
+            const char* bdev_name = "unknown";
+            switch(ext.bdev) {
+              case 0: bdev_name = "WAL"; break;
+              case 1: bdev_name = "DB "; break;
+              case 2: bdev_name = "SLOW"; break;
+            }
+            
+            uint64_t end_offset = ext.offset + ext.length;
+            cout << "        [" << i << "] " 
+                 << bdev_name << " device"
+                 << " │ offset: 0x" << std::hex << std::setw(12) << std::setfill('0') << ext.offset
+                 << " - 0x" << std::setw(12) << std::setfill('0') << end_offset
+                 << std::dec << std::setfill(' ')
+                 << " │ length: " << std::setw(10) << ext.length << " bytes"
+                 << " (" << (ext.length / 1024) << " KB)"
+                 << std::endl;
+          }
+        } else {
+          cout << "     └─ No extents (empty file)" << std::endl;
+        }
+        
         delete file_reader;
+      } else {
+        cout << "\n  ⚠️  " << filename << " (failed to read file info)" << std::endl;
       }
-      
-      total_files++;
-      total_size += file_size;
-      
-      // Format output
-      cout << "  " << std::left << std::setw(50) << filename 
-           << " " << std::right << std::setw(15) << file_size 
-           << " bytes" << std::endl;
     }
   }
   
-  cout << std::string(80, '=') << std::endl;
-  cout << "Total: " << total_files << " files, " 
-       << total_size << " bytes (" 
+  cout << "\n" << std::string(120, '=') << std::endl;
+  cout << "📊 Summary:" << std::endl;
+  cout << "   Total files: " << total_files << std::endl;
+  cout << "   Total size:  " << total_size << " bytes (" 
        << (total_size / 1024.0 / 1024.0) << " MB)" << std::endl;
+  cout << "   Total allocated: " << total_allocated << " bytes (" 
+       << (total_allocated / 1024.0 / 1024.0) << " MB)" << std::endl;
+  if (total_allocated > 0) {
+    cout << "   Space efficiency: " << std::fixed << std::setprecision(2) 
+         << (total_size * 100.0 / total_allocated) << "%" << std::endl;
+  }
+  cout << std::string(120, '=') << std::endl;
   
   fs->umount();
   delete fs;
