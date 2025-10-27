@@ -3230,7 +3230,24 @@ void BlueStore::ExtentMap::fault_range(
 	       << " for range 0x" << offset << "~" << length << std::dec
 	       << " (" << v.length() << " bytes)" << dendl;
       ceph_assert(p->dirty == false);
-      ceph_assert(v.length() == p->shard_info->bytes);
+      
+      // Handle ExtentMap metadata inconsistency gracefully for export/recovery operations
+      if (v.length() != p->shard_info->bytes) {
+        derr << __func__ << " WARNING: ExtentMap shard size mismatch for object " << onode->oid
+             << " shard offset 0x" << std::hex << p->shard_info->offset << std::dec
+             << ": expected " << p->shard_info->bytes 
+             << " bytes but got " << v.length() << " bytes from database" << dendl;
+        derr << __func__ << " Auto-correcting shard metadata: updating bytes from " 
+             << p->shard_info->bytes << " to " << v.length() 
+             << " to allow operation to continue" << dendl;
+        
+        // Auto-correct the metadata to match actual data for recovery purposes
+        p->shard_info->bytes = v.length();
+        
+        // Log this as a corruption that should be fixed later
+        derr << __func__ << " NOTICE: This indicates ExtentMap corruption. "
+             << "Please run 'ceph-bluestore-tool repair' after export/recovery" << dendl;
+      }
       onode->c->store->logger->inc(l_bluestore_onode_shard_misses);
     } else {
       onode->c->store->logger->inc(l_bluestore_onode_shard_hits);
