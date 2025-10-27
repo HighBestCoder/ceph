@@ -3216,10 +3216,24 @@ void BlueStore::ExtentMap::fault_range(
         [&](const string& final_key) {
           int r = db->get(PREFIX_OBJ, final_key, &v);
           if (r < 0) {
-	    derr << __func__ << " missing shard 0x" << std::hex
+	    derr << __func__ << " ERROR: missing shard 0x" << std::hex
 		 << p->shard_info->offset << std::dec << " for " << onode->oid
 		 << dendl;
-	    ceph_assert(r >= 0);
+	    derr << __func__ << " WARNING: Creating minimal empty shard to allow operation to continue" << dendl;
+	    derr << __func__ << " NOTICE: This indicates severe ExtentMap corruption. "
+	         << "Object may be partially corrupted or unreadable" << dendl;
+	    
+	    // Create a minimal valid empty shard buffer to prevent decode errors
+	    // This creates a valid but empty extent map shard
+	    v.clear();
+	    __u8 struct_v = 2;  // Use version 2
+	    denc(struct_v, v);
+	    uint32_t num = 0;   // No blobs
+	    denc_varint(num, v);
+	    // No extents follow - this creates a valid empty shard
+	    
+	    // Set return code to 0 to indicate "success" with empty data
+	    r = 0;
           }
         }
       );
