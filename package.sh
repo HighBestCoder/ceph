@@ -12,7 +12,9 @@ cp ./build/bin/ceph-bluestore-tool $PACK_DIR/bin/
 cp ./build/bin/ceph-objectstore-tool $PACK_DIR/bin/
 
 # 复制自定义库(非系统库)
-cp -rfL /lib64/libfmt.so.6.2.1 $PACK_DIR/lib/
+cp -rfL /lib/x86_64-linux-gnu/libsnappy.so.1 $PACK_DIR/lib/
+cp -rfL ./build/lib/libceph_snappy.so $PACK_DIR/lib/
+cp -rfL /lib64/libfmt.so.6.2.1 $PACK_DIR/lib/libfmt.so.6
 cp -rfL ./build/lib/libceph-common.so.2 $PACK_DIR/lib/
 
 # 创建启动脚本
