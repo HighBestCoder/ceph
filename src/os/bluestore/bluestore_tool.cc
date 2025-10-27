@@ -356,37 +356,19 @@ static void bluefs_overwrite(
     exit(EXIT_FAILURE);
   }
   
-  // CRITICAL: We must open BlueFS through BlueStore to ensure shared allocator
-  // is properly initialized. Direct BlueFS mount will not know about space
-  // allocated to BlueStore, leading to allocation conflicts.
-  
-  cout << "Opening BlueStore to access BlueFS with proper allocator..." << std::endl;
-  
-  BlueStore bluestore(cct, path);
-  KeyValueDB* db = nullptr;
-  
-  // Open db environment to initialize shared allocator properly
-  r = bluestore.open_db_environment(&db, false);
+  // Open BlueFS directly without opening RocksDB
+  validate_path(cct, path, true);
+  BlueFS *fs = new BlueFS(cct);
+
+  add_devices(fs, cct, devs);
+
+  r = fs->mount();
   if (r < 0) {
-    cerr << "unable to open BlueStore db environment: " << cpp_strerror(r) << std::endl;
-    f.close();
-    exit(EXIT_FAILURE);
-  }
-  
-  // Get BlueFS from BlueStore (shares allocator with BlueStore)
-  BlueFS* fs = bluestore.get_bluefs();
-  
-  if (!fs) {
-    cerr << "unable to get BlueFS from BlueStore" << std::endl;
-    bluestore.close_db_environment();
+    cerr << "unable to mount bluefs: " << cpp_strerror(r) << std::endl;
     f.close();
     exit(EXIT_FAILURE);
   }
 
-  // NOTE: The shared allocator is now properly initialized with BlueStore's freelist
-  // This prevents allocating space that is already used by BlueStore
-  
-  BlueFS::FileWriter *h;
   fs::path file_path(dest_file);
   const string dir = file_path.parent_path();
   const string file_name = file_path.filename();
@@ -397,7 +379,8 @@ static void bluefs_overwrite(
   if (r < 0) {
     cerr << "ERROR: File " << dest_file << " does not exist. Cannot overwrite non-existent file." << std::endl;
     cerr << "Use 'bluefs-import' command to create new files." << std::endl;
-    bluestore.close_db_environment();
+    fs->umount();
+    delete fs;
     f.close();
     exit(EXIT_FAILURE);
   }
@@ -414,7 +397,8 @@ static void bluefs_overwrite(
     cerr << "ERROR: New file size (" << new_size << ") is larger than existing file (" 
          << existing_size << "). Cannot overwrite with larger file." << std::endl;
     cerr << "This would require additional disk allocation and may cause conflicts." << std::endl;
-    bluestore.close_db_environment();
+    fs->umount();
+    delete fs;
     f.close();
     exit(EXIT_FAILURE);
   }
@@ -422,10 +406,12 @@ static void bluefs_overwrite(
   cout << "Overwriting existing file (reusing allocated disk space)..." << std::endl;
   
   // Open existing file for overwrite (this preserves allocated extents)
+  BlueFS::FileWriter *h;
   r = fs->open_for_write(dir, file_name, &h, true);  // true = overwrite mode
   if (r < 0) {
     cerr << "failed to open existing file for overwrite " << dest_file << ": " << cpp_strerror(r) << std::endl;
-    bluestore.close_db_environment();
+    fs->umount();
+    delete fs;
     f.close();
     exit(EXIT_FAILURE);
   }
@@ -448,14 +434,8 @@ static void bluefs_overwrite(
   // Sync metadata to ensure the overwritten file is properly persisted
   fs->sync_metadata(false);
   
-  // CRITICAL: Update superblock to ensure log_fnode is current
-  // Without this, the superblock's log_fnode may reference old/stale extents
-  // that conflict with newly allocated file extents, causing allocator errors
-  // during subsequent mount() operations (e.g., "unexpected extent" in init_rm_free)
-  fs->update_superblock();
-  
-  // Close through BlueStore to ensure proper cleanup
-  bluestore.close_db_environment();
+  fs->umount();
+  delete fs;
   
   cout << "Successfully overwrote " << dest_file << " with " << input_file << std::endl;
   cout << "Original allocated space preserved, no new disk allocation occurred." << std::endl;
