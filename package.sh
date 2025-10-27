@@ -1,17 +1,19 @@
 #!/bin/bash
 # pack-ceph-tools.sh
 
+set -e
+
 # 创建打包目录
-PACK_DIR="ceph-tools-package-osd35"
+PACK_DIR="ceph-tools-package"
 mkdir -p $PACK_DIR/{bin,lib}
 
 # 复制主程序
-cp ../build/bin/ceph-bluestore-tool $PACK_DIR/bin/
-cp ../build/bin/ceph-objectstore-tool $PACK_DIR/bin/
+cp ./build/bin/ceph-bluestore-tool $PACK_DIR/bin/
+cp ./build/bin/ceph-objectstore-tool $PACK_DIR/bin/
 
 # 复制自定义库(非系统库)
 cp -rfL /lib64/libfmt.so.6.2.1 $PACK_DIR/lib/
-cp /home/build/lib/libceph-common.so.2 $PACK_DIR/lib/
+cp -rfL ./build/lib/libceph-common.so.2 $PACK_DIR/lib/
 
 # 创建启动脚本
 cat > $PACK_DIR/ceph-bluestore-tool.sh <<'EOF'
@@ -47,7 +49,4 @@ Ceph 工具包使用说明
 EOF
 
 # 打包
-tar czf ceph-tools-package-osd35.tar.gz $PACK_DIR/
-
-echo "打包完成: ceph-tools-package-osd35.tar.gz"
-echo "包含工具: ceph-bluestore-tool, ceph-objectstore-tool"
+tar czf ceph-tools-package.tar.gz $PACK_DIR/
