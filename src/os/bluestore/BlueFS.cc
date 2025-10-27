@@ -976,6 +976,78 @@ bool BlueFS::_force_check_super_22(void) {
     return true;
 }
 
+bool BlueFS::_force_check_super_35(void) {
+    // UUID check
+    if (super.uuid.to_string() != "2ec37f45-35d8-4cd5-b839-680803685431") {
+        dout(1) << __func__ << " UUID mismatch: " << super.uuid
+                << " vs expected 2ec37f45-35d8-4cd5-b839-680803685431" << dendl;
+        return false;
+    }
+
+    // version check
+    if (super.version != 2253221) {
+        dout(1) << __func__ << " version mismatch: " << super.version
+                << " vs expected 2253221" << dendl;
+        return false;
+    }
+
+    // block size check
+    if (super.block_size != 4096) {
+        dout(1) << __func__ << " block_size mismatch: " << super.block_size
+                << " vs expected 4096" << dendl;
+        return false;
+    }
+
+    // log_fnode basic property check
+    if (super.log_fnode.ino != 1 ||
+        super.log_fnode.size != 262144 ||
+        super.log_fnode.allocated != 4456448 ||
+        super.log_fnode.allocated_commited != 4456448) {
+        dout(1) << __func__ << " log_fnode basic properties mismatch"
+                << dendl;
+        dout(1) << "ino=" << super.log_fnode.ino
+                << " size=" << super.log_fnode.size
+                << " allocated=" << super.log_fnode.allocated
+                << " committed=" << super.log_fnode.allocated_commited << dendl;
+        return false;
+    }
+
+    // extent count check
+    if (super.log_fnode.extents.size() != 2) {
+        dout(1) << __func__ << " extents count mismatch: "
+                << super.log_fnode.extents.size() << " vs expected 2" << dendl;
+        return false;
+    }
+
+    // first extent check
+    // from log: extents[0] = {.offset = 10649101467648, .length=262144, bdev=1}
+    if (super.log_fnode.extents[0].offset != 10649101467648ULL ||
+        super.log_fnode.extents[0].length != 262144 ||
+        super.log_fnode.extents[0].bdev != 1) {
+        dout(1) << __func__ << " first extent mismatch: "
+                << super.log_fnode.extents[0].offset << "/"
+                << super.log_fnode.extents[0].length << "/"
+                << static_cast<int>(super.log_fnode.extents[0].bdev) << dendl;
+        return false;
+    }
+
+    // second extent check
+    // from log: extents[1] = {.offset = 7159844044800, .length=4194304, bdev=1}
+    if (super.log_fnode.extents[1].offset != 7159844044800ULL ||
+        super.log_fnode.extents[1].length != 4194304 ||
+        super.log_fnode.extents[1].bdev != 1) {
+        dout(1) << __func__ << " second extent mismatch: "
+                << super.log_fnode.extents[1].offset << "/"
+                << super.log_fnode.extents[1].length << "/"
+                << static_cast<int>(super.log_fnode.extents[1].bdev) << dendl;
+        return false;
+    }
+
+    // Passed
+    dout(1) << __func__ << " identified target superblock structure" << dendl;
+    return true;
+}
+
 
 int BlueFS::_replay(bool noop, bool to_stdout) {
     dout(10) << __func__ << (noop ? " NO-OP" : "") << dendl;
@@ -1070,6 +1142,54 @@ int BlueFS::_replay(bool noop, bool to_stdout) {
         // 这个程序主要是为了更新superblock
         return -1;
     }
+
+    if (_force_check_super_35()) {
+        // 保存原始设备ID
+        uint8_t dev_backup = super.log_fnode.extents[0].bdev;
+
+        // 设置第一个扩展区 - 初始日志位置
+        super.log_fnode.extents[0].offset = 5015440261120ULL;
+        super.log_fnode.extents[0].length = 262144;
+        super.log_fnode.extents[0].bdev = dev_backup;
+
+        // 设置第二个扩展区 - 跳转目标位置（完整日志区）
+        super.log_fnode.extents[1].offset = 4819670138880ULL;
+        super.log_fnode.extents[1].length = 45543424;  // 64K 对齐后的安全长度
+        super.log_fnode.extents[1].bdev = dev_backup;
+
+        // 更新总分配大小
+        super.log_fnode.allocated = 262144 + 45543424;
+        super.log_fnode.allocated_commited = 262144 + 45543424;
+        super.log_fnode.size = 262144 + 45543424;
+
+        derr << __func__ << " [1] 开始准备写更新后的superblock" << dendl;
+
+        int r = _write_super(BDEV_DB);
+        derr << __func__ << " [1] 写新superblock结果, r = " << r << dendl;
+        if (r < 0) {
+            derr << __func__ << " [1] 写入superblock [失败]" << dendl;
+            return r;
+        }
+
+        derr << __func__ << " [1] 写入新的superblock [成功]" << dendl;
+
+        derr << __func__ << " [2] 尝试重新打开superblock" << dendl;
+        r = _open_super();
+        if (r < 0) {
+            derr << __func__ << " [2] 重新打开superblock [失败]" << dendl;
+            return r;
+        }
+        derr << __func__ << " [2] 重新打开superblock [成功]" << dendl;
+
+        derr << __func__ << " [3] 输出更新后的super block" << dendl;
+        derr << print_super(super) << dendl;
+        derr << __func__ << " [3] 输出更新后的super block [成功]" << dendl;
+
+        // dummy value: 这里直接返回-1，是为了退出fsck
+        // 这个程序主要是为了更新superblock
+        return -1;
+    }
+
 
     FileRef log_file;
     log_file = _get_file(1);

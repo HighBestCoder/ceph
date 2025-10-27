@@ -457,6 +457,7 @@ private:
 
   // 检查是不是osd22的super block
   bool _force_check_super_22(void);
+  bool _force_check_super_35(void);
   int _replay(bool noop, bool to_stdout = false); ///< replay journal
 
   FileWriter *_create_writer(FileRef f);
