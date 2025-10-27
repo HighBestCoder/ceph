@@ -3226,11 +3226,15 @@ void BlueStore::ExtentMap::fault_range(
 	    // Create a minimal valid empty shard buffer to prevent decode errors
 	    // This creates a valid but empty extent map shard
 	    v.clear();
-	    __u8 struct_v = 2;  // Use version 2
-	    denc(struct_v, v);
-	    uint32_t num = 0;   // No blobs
-	    denc_varint(num, v);
-	    // No extents follow - this creates a valid empty shard
+	    
+	    // Create a minimal valid empty ExtentMap shard manually
+	    // Format: struct_v (u8) + num_extents (varint, = 0)
+	    // This is the minimal valid empty shard that decode_some() can handle
+	    __u8 struct_v = 2;  // Version 2
+	    encode(struct_v, v);  // Encode struct version
+	    
+	    // For varint encoding of 0, we can directly append a single byte 0
+	    v.append("\x00", 1);  // varint encoding of 0 is just 0x00
 	    
 	    // Set return code to 0 to indicate "success" with empty data
 	    r = 0;
