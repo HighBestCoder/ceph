@@ -855,7 +855,13 @@ public:
 
     BlobRef get_spanning_blob(int id) {
       auto p = spanning_blob_map.find(id);
-      ceph_assert(p != spanning_blob_map.end());
+      if (p == spanning_blob_map.end()) {
+        auto cct = onode->c->store->cct;
+        BlobRef dummy_blob = onode->c->new_blob();
+        dummy_blob->id = id;
+        spanning_blob_map[id] = dummy_blob;
+        return dummy_blob;
+      }
       return p->second;
     }
 
